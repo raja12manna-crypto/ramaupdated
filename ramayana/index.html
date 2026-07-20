@@ -1,0 +1,1962 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>RAMAYANA: Paths to Lanka</title>
+<meta name="description" content="An 8-bit adventure. Play as Ram, Sita, Hanuman or Raavan — every path leads to the final battle.">
+<style>
+  :root{ --gold:#f2c14e; --dark:#0d0a14; }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;height:100%;background:var(--dark);overflow:hidden;font-family:monospace;}
+  #wrap{position:fixed;inset:0;display:grid;place-items:center;}
+  canvas{image-rendering:pixelated;image-rendering:crisp-edges;background:#000;
+         max-width:100vw;max-height:100vh;touch-action:none;}
+  .tc{position:fixed;bottom:2.5vh;z-index:50;display:none;user-select:none;}
+  body.touch .tc{display:flex;}
+  #tc-left{left:2.5vw;gap:2vw;align-items:flex-end;}
+  #tc-right{right:2.5vw;gap:2vw;align-items:flex-end;}
+  .tbtn{width:13vw;height:13vw;max-width:74px;max-height:74px;border-radius:18%;
+        background:rgba(255,255,255,.12);border:2px solid rgba(255,255,255,.35);
+        color:#fff;font-size:5vw;font-weight:bold;display:grid;place-items:center;
+        font-family:monospace;}
+  .tbtn:active,.tbtn.on{background:rgba(242,193,78,.55);border-color:var(--gold);}
+  .tbtn.small{width:10vw;height:10vw;font-size:3.6vw;}
+  #tc-right{flex-wrap:wrap;width:30vw;max-width:170px;justify-content:flex-end;}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="cv" width="960" height="540"></canvas></div>
+<div class="tc" id="tc-left">
+  <div class="tbtn" data-k="ArrowLeft">◀</div>
+  <div class="tbtn" data-k="ArrowDown">▼</div>
+  <div class="tbtn" data-k="ArrowRight">▶</div>
+</div>
+<div class="tc" id="tc-top" style="top:2vh;right:2.5vw;bottom:auto;gap:2vw;">
+  <div class="tbtn small" id="btn-fs">⛶</div>
+  <div class="tbtn small" id="btn-pause">Ⅱ</div>
+</div>
+<div class="tc" id="tc-right">
+  <div class="tbtn small" data-k="KeyD">D</div>
+  <div class="tbtn small" data-k="KeyS">S</div>
+  <div class="tbtn" data-k="KeyA">A</div>
+  <div class="tbtn" data-k="ArrowUp">▲</div>
+</div>
+
+<script>
+"use strict";
+/* =====================================================================
+   RAMAYANA: PATHS TO LANKA · v2 "Game Feel" edition
+   Modern platforming (coyote time · jump buffer · variable jump),
+   per-hero abilities, moving/crumbling/bouncing/swinging levels,
+   secrets, combos, screen shake, and a raga-flavoured chiptune score.
+   ===================================================================== */
+
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+const W = 960, H = 540, TILE = 32;
+ctx.imageSmoothingEnabled = false;
+
+/* ---------------- Input ---------------- */
+const keys = {}, prevKeys = {};
+const KEYMAP = ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','KeyA','KeyS','KeyD','KeyW','Enter','KeyM','Escape','KeyP','KeyF'];
+const edge = {};
+addEventListener('keydown', e => { if (KEYMAP.includes(e.code)){ e.preventDefault(); if(!keys[e.code])edge[e.code]=true; keys[e.code]=true; unlockAudio(); }});
+addEventListener('keyup',   e => { if (KEYMAP.includes(e.code)) keys[e.code]=false; });
+function pressed(k){ return !!edge[k]; }
+function anyAction(){ return pressed('KeyA') || pressed('Enter') || pointer.tapped; }
+const jumpKey = () => keys['ArrowUp'] || keys['KeyW'];
+const jumpPressed = () => pressed('ArrowUp') || pressed('KeyW');
+
+if ('ontouchstart' in window || navigator.maxTouchPoints>0) document.body.classList.add('touch');
+document.querySelectorAll('.tbtn').forEach(b=>{
+  const k=b.dataset.k;
+  const on = e=>{e.preventDefault(); if(!keys[k])edge[k]=true; keys[k]=true; b.classList.add('on'); unlockAudio();};
+  const off= e=>{e.preventDefault(); keys[k]=false; b.classList.remove('on');};
+  b.addEventListener('pointerdown',on); b.addEventListener('pointerup',off);
+  b.addEventListener('pointercancel',off); b.addEventListener('pointerleave',off);
+});
+document.getElementById('btn-pause').addEventListener('pointerdown',e=>{e.preventDefault();unlockAudio();if(G.mode==='play'||G.mode==='pause')togglePause();});
+document.getElementById('btn-fs').addEventListener('pointerdown',e=>{e.preventDefault();toggleFS();});
+const pointer = {x:0,y:0,tapped:false};
+cv.addEventListener('pointerdown', e=>{
+  const r=cv.getBoundingClientRect();
+  pointer.x=(e.clientX-r.left)*(W/r.width);
+  pointer.y=(e.clientY-r.top)*(H/r.height);
+  pointer.tapped=true; unlockAudio();
+});
+
+/* ---------------- Audio ---------------- */
+let AC=null, muted=false;
+/* ---------------- Persistent save ---------------- */
+const SAVE=(()=>{try{return JSON.parse(localStorage.getItem('ramayana_v1'))||{}}catch(e){return{}}})();
+SAVE.medals=SAVE.medals||{}; SAVE.unlocked=SAVE.unlocked||{ram:true};
+SAVE.completed=SAVE.completed||{}; SAVE.best=SAVE.best||{}; SAVE.diyaBank=SAVE.diyaBank||0;
+SAVE.name=SAVE.name||''; SAVE.lb=SAVE.lb||[]; SAVE.daily=SAVE.daily||{};
+function saveGame(){try{localStorage.setItem('ramayana_v1',JSON.stringify(SAVE))}catch(e){}}
+if(typeof SAVE.muted==='boolean') muted=SAVE.muted;
+const HERO_ORDER=['ram','hanuman','sita','raavan'];
+function medalKey(lid,hero){return lid==='finale'?('finale_'+hero):lid;}
+function unlockAudio(){
+  if(!AC){ try{ AC=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} }
+  if(AC && AC.state==='suspended') AC.resume();
+  Music.ensure();
+}
+function tone(freq,dur,type='square',vol=.12,slide=0,when=0){
+  if(!AC||muted) return;
+  const t0=(when||AC.currentTime);
+  const o=AC.createOscillator(), g=AC.createGain();
+  o.type=type; o.frequency.setValueAtTime(freq,t0);
+  if(slide) o.frequency.exponentialRampToValueAtTime(Math.max(30,freq+slide), t0+dur);
+  g.gain.setValueAtTime(0.0001,t0);
+  g.gain.linearRampToValueAtTime(vol,t0+.012);
+  g.gain.exponentialRampToValueAtTime(.001,t0+dur);
+  o.connect(g); g.connect(AC.destination);
+  o.start(t0); o.stop(t0+dur+.02);
+}
+const SFXV={ram:{m:1,w:'square'},sita:{m:1.28,w:'triangle'},
+  hanuman:{m:.9,w:'square'},raavan:{m:.72,w:'sawtooth'}};
+function hv(){return SFXV[G&&G.playChar]||{m:1,w:'square'};}
+const SFX={
+  jump(){const v=hv();tone(300*v.m,.16,v.w,.09,320*v.m);},
+  djump(){const v=hv();tone(430*v.m,.16,v.w,.09,380*v.m);},
+  wallj(){const v=hv();tone(360*v.m,.12,v.w,.09,240*v.m);},
+  dash(){const v=hv();tone(620*v.m,.1,'sawtooth',.07,220);},
+  shoot(){const v=hv();tone(780*v.m,.08,v.w,.08,-220);},
+  slash(){const v=hv();tone(230*v.m,.09,'sawtooth',.09,140);},
+  special(){const v=hv();tone(310*v.m,.3,v.w==='sawtooth'?'sawtooth':'triangle',.13,720*v.m);},
+  hit(){tone(140,.2,'sawtooth',.13,-60);},
+  poof(){tone(520,.12,'triangle',.1,-360);},
+  stomp(){tone(240,.1,'square',.1,-120); tone(480,.08,'square',.06,200);},
+  collect(){tone(940,.06,'triangle',.09); setTimeout(()=>tone(1280,.09,'triangle',.09),60);},
+  heart(){tone(660,.1,'triangle',.1); setTimeout(()=>tone(880,.12,'triangle',.1),90);},
+  check(){tone(523,.1,'square',.08); setTimeout(()=>tone(784,.14,'square',.08),100);},
+  freeze(){tone(1250,.25,'triangle',.1,-850);},
+  boing(){tone(180,.22,'square',.11,520);},
+  crumble(){tone(120,.25,'sawtooth',.09,-60);},
+  pound(){tone(90,.3,'sawtooth',.15,-40);},
+  vine(){tone(520,.1,'triangle',.08,120);},
+  secret(){[660,830,990,1320].forEach((f,i)=>setTimeout(()=>tone(f,.14,'triangle',.1),i*90));},
+  combo(n){tone(600+n*80,.07,'square',.07);},
+  win(){[523,659,784,1047].forEach((f,i)=>setTimeout(()=>tone(f,.22,'square',.11),i*140));},
+  over(){[392,311,262,196].forEach((f,i)=>setTimeout(()=>tone(f,.25,'triangle',.11),i*170));},
+  boss(){tone(90,.5,'sawtooth',.15,40);}
+};
+
+/* ------------- Chiptune music engine (raga-flavoured) ------------- */
+const NOTE=(root,semi)=> root*Math.pow(2,semi/12);
+const D3=146.83;
+/* tracks: mel = 32 eighth-note steps (semitone offsets or null), bass = 16 steps */
+const TRACKS={
+  forest:{ bpm:92, root:D3, drone:true, melType:'triangle', melVol:.055,
+    scaleName:'Ahir Bhairav',
+    mel:[0,null,4,5, 7,null,9,7, 10,null,9,7, 5,null,4,1,
+         0,null,1,4, 5,null,7,9, 12,null,10,9, 7,5,4,null],
+    bass:[-12,null,null,null, -5,null,null,null, -12,null,null,null, -7,null,null,null]},
+  night:{ bpm:76, root:D3, drone:true, melType:'triangle', melVol:.05,
+    mel:[4,null,6,7, 9,null,11,9, 7,null,6,4, 2,null,4,6,
+         7,null,9,11, 14,null,11,9, 7,null,6,4, 2,0,null,null],
+    bass:[-12,null,null,null, null,null,-5,null, -12,null,null,null, null,null,-7,null]},
+  action:{ bpm:132, root:D3*1.122, drone:false, melType:'square', melVol:.05,
+    mel:[0,4,7,9, 7,4,0,null, 4,7,9,12, 9,7,4,null,
+         0,4,7,9, 12,9,7,4, 2,4,7,9, 7,4,2,null],
+    bass:[0,-12,0,-12, 7,-5,7,-5, 0,-12,0,-12, 5,-7,7,-5]},
+  boss:{ bpm:148, root:D3, drone:false, melType:'sawtooth', melVol:.045,
+    mel:[12,null,11,null, 8,null,7,null, 5,null,7,8, 7,null,5,3,
+         12,null,14,null, 15,null,14,12, 11,8,7,5, 3,2,0,null],
+    bass:[0,0,3,0, 5,0,3,2, 0,0,3,0, 7,5,3,2]},
+  ramTheme:{ bpm:122, root:D3, drone:false, melType:'square', melVol:.05,
+    mel:[0,null,4,7, 12,null,7,null, 9,null,7,5, 4,null,2,null,
+         0,null,4,7, 12,null,14,12, 9,7,9,11, 12,null,null,null],
+    bass:[0,-12,7,-12, 5,-12,7,-12, 0,-12,7,-12, 9,-3,7,-5]},
+  sitaTheme:{ bpm:90, root:D3*1.189, drone:true, melType:'triangle', melVol:.055,
+    mel:[4,null,7,9, 11,null,9,7, 4,null,2,4, 7,null,null,null,
+         9,null,11,12, 14,null,12,11, 9,null,7,4, 2,null,4,null],
+    bass:[0,null,7,null, 5,null,7,null, 0,null,7,null, 5,null,2,null]},
+  hanumanTheme:{ bpm:150, root:D3*1.122, drone:false, melType:'square', melVol:.05,
+    mel:[0,12,0,12, 4,16,4,null, 5,17,5,17, 7,null,4,0,
+         0,12,0,12, 9,21,9,null, 7,12,9,12, 14,12,7,null],
+    bass:[0,0,-12,0, 5,5,-7,5, 0,0,-12,0, 7,7,-5,7]},
+  raavanTheme:{ bpm:112, root:D3*0.891, drone:true, melType:'sawtooth', melVol:.042,
+    mel:[0,null,3,null, 6,null,3,null, 0,null,3,6, 8,null,6,3,
+         0,null,3,null, 6,null,8,null, 11,null,8,6, 3,null,2,null],
+    bass:[0,0,null,0, 3,3,null,3, 0,0,null,0, 6,6,5,3]}
+};
+function heroTrack(hero,def){
+  if(def&&def.boss)return 'boss';
+  return {ram:'ramTheme',sita:'sitaTheme',hanuman:'hanumanTheme',raavan:'raavanTheme'}[hero]||'action';
+}
+const Music={
+  cur:null, name:null, step:0, nextT:0, iv:null, droneNodes:null,
+  ensure(){ if(this.name && !this.iv && AC) this.play(this.name,true); },
+  play(name,force){
+    if(!force && this.name===name) return;
+    this.stop(false); this.name=name;
+    if(!AC) return;
+    this.cur=TRACKS[name]; this.step=0; this.nextT=AC.currentTime+.06;
+    if(this.cur.drone && !muted){
+      const g=AC.createGain(); g.gain.value=.035; g.connect(AC.destination);
+      const o1=AC.createOscillator(), o2=AC.createOscillator();
+      o1.type='sawtooth'; o2.type='sawtooth';
+      o1.frequency.value=this.cur.root/2; o2.frequency.value=this.cur.root/2*1.003;
+      o1.connect(g); o2.connect(g); o1.start(); o2.start();
+      this.droneNodes=[o1,o2,g];
+    }
+    this.iv=setInterval(()=>this.tick(),80);
+  },
+  stop(clearName=true){
+    if(this.iv){clearInterval(this.iv); this.iv=null;}
+    if(this.droneNodes){ this.droneNodes.forEach(n=>{try{n.stop?n.stop():n.disconnect();}catch(e){}}); this.droneNodes=null; }
+    if(clearName) this.name=null;
+    this.cur=null;
+  },
+  pause(){ if(this.iv){clearInterval(this.iv); this.iv=null;} },
+  resume(){ if(this.cur&&!this.iv){this.nextT=AC?AC.currentTime+.05:0; this.iv=setInterval(()=>this.tick(),80);} },
+  tick(){
+    if(!AC||!this.cur) return;
+    const spb=60/this.cur.bpm/2;           // eighth note
+    while(this.nextT < AC.currentTime+.30){
+      if(!muted){
+        const t=this.cur, s=this.step;
+        const m=t.mel[s%32];
+        if(m!==null&&m!==undefined) tone(NOTE(t.root*2,m), spb*1.7, t.melType, t.melVol,0,this.nextT);
+        const b=t.bass[s%16];
+        if(b!==null&&b!==undefined) tone(NOTE(t.root,b), spb*.95,'square',.055,0,this.nextT);
+      }
+      this.nextT+=spb; this.step++;
+    }
+  }
+};
+function setMuted(m){
+  muted=m; SAVE.muted=m; saveGame();
+  if(muted){ Music.stop(false); }
+  else if(Music.name){ Music.play(Music.name,true); }
+}
+
+/* ---------------- Sprite compositor (paper-doll pixel heroes) ------ */
+/* unit u = pixel size. Grid ~13u wide, 19u tall. pose: idle|run|jump|fall|attack|pound */
+const PAL={
+  ram:    {skin:'#5f8fe6',skin2:'#4a76c4',hair:'#14142a',attire:'#f2c14e',attire2:'#d9a636',belt:'#c0392b',foot:'#8a5a2b',acc:'#8a5a2b'},
+  sita:   {skin:'#e8b98a',skin2:'#d6a578',hair:'#1a1026',attire:'#d94f4f',attire2:'#b83d3d',belt:'#f2c14e',foot:'#e8b98a',acc:'#f2c14e'},
+  hanuman:{skin:'#f0c896',skin2:'#ddb684',hair:'#d97a1f',attire:'#d97a1f',attire2:'#b45f12',belt:'#c0392b',foot:'#b45f12',acc:'#8a5a2b'},
+  raavan: {skin:'#caa06a',skin2:'#b68c58',hair:'#14142a',attire:'#4b2e73',attire2:'#3a2359',belt:'#f2c14e',foot:'#1a1a1a',acc:'#f2c14e'},
+  rakshasa:{skin:'#3d8c40',skin2:'#2f7032',hair:'#0e2e12',attire:'#245c28',attire2:'#1c4a20',belt:'#12300f',foot:'#12300f',acc:'#e8e8e8'},
+  vanara: {skin:'#c99b62',skin2:'#b68950',hair:'#6b4a26',attire:'#6b4a26',attire2:'#54391c',belt:'#c0392b',foot:'#4d3016',acc:'#6b4a26'}
+};
+function drawChar(key,x,y,u,flip,pose,animT,opts={}){
+  const p=PAL[key]; if(!p) return;
+  ctx.save();
+  ctx.translate(Math.round(x),Math.round(y));
+  /* squash & stretch pivot at feet centre */
+  const sq=opts.squash||0;                    // -1 stretch .. +1 squash
+  ctx.translate(6.5*u, 19*u);
+  ctx.scale(1+sq*.22, 1-sq*.22);
+  if(flip) ctx.scale(-1,1);
+  ctx.translate(-6.5*u, -19*u);
+  const R=(c,r,w,h,col)=>{ctx.fillStyle=col;ctx.fillRect(c*u,r*u,w*u,h*u);};
+
+  const run=pose==='run', air=pose==='jump'||pose==='fall'||pose==='pound';
+  const f=Math.floor(animT*10)%4;             // run frame 0..3
+  const breathe=pose==='idle'? (Math.floor(animT*2)%2):0;
+
+  /* --- back accessories --- */
+  if(key==='sita'){ R(0.5,4,1.5,8,p.hair); R(0.5,12,1,2,p.acc); }               // braid
+  if(key==='hanuman'){ const tw=Math.sin(animT*4)*1.2;                          // tail
+    R(-1+tw,9,2,1.4,p.hair); R(-2+tw,7,1.6,2.6,p.hair); R(-1.4+tw,5.6,1.4,1.6,p.hair);
+    if(pose!=='attack'){ R(1,4.6,1,6.4,'#8a5a2b'); ctx.fillStyle='#c8ccd4';
+      ctx.beginPath(); ctx.arc(1.5*u,3.8*u,1.9*u,0,7); ctx.fill();
+      R(0.9,3.2,1.2,.6,'#f2c14e'); } }                                          // gada on back
+  if(key==='ram'){ R(2,7,1.2,6,p.acc); R(1.4,6,2.4,1.4,'#5e3a1a');
+    if(pose!=='attack'){ ctx.strokeStyle='#8a5a2b'; ctx.lineWidth=u*.8;
+      ctx.beginPath(); ctx.arc(2.2*u,10*u,4.6*u,1.9,4.4); ctx.stroke();
+      ctx.strokeStyle='#e8e0c8'; ctx.lineWidth=u*.3;
+      ctx.beginPath(); ctx.moveTo(1.1*u,6.2*u); ctx.lineTo(1.1*u,13.8*u); ctx.stroke(); } }   // quiver + bow at rest
+  if(key==='raavan'){ R(0.6,7,2,1.6,p.acc); R(10.4,7,2,1.6,p.acc); }            // shoulder pads
+
+  /* --- legs / skirt --- */
+  const footY=17.6;
+  if(key==='sita'){
+    const sway=run? (f%2?0.6:-0.6):0;
+    R(2.5,12.5,8,2,p.attire); R(2,14.5,9,2,p.attire); R(1.5+sway,16.5,10,1.6,p.attire2);
+    R(1.5+sway,17.6,10,.8,p.belt);
+    R(4,18.2,1.6,.8,p.skin); R(7.5,18.2,1.6,.8,p.skin);
+  } else if(air){
+    if(pose==='pound'){ R(3.5,13,3,3.4,p.attire2); R(7,13,3,3.4,p.attire2);
+      R(3.5,16.2,3,1.4,p.foot); R(7,16.2,3,1.4,p.foot); }
+    else if(pose==='jump'){ R(3,13,3,3,p.attire2); R(7.5,14,3,3,p.attire2);
+      R(3,15.8,3,1.4,p.foot); R(7.5,16.8,3,1.4,p.foot); }
+    else { R(3,13,3,4.4,p.attire2); R(7.5,13,3,3,p.attire2);
+      R(3,17.2,3,1.4,p.foot); R(7.5,15.8,3,1.4,p.foot); }
+  } else if(run){
+    const a=[0,1.6,0,-1.6][f], b=-a;
+    R(3+a,13,3,2.6,p.attire2); R(3+a*1.4,15.4,3,2.2,p.attire2); R(3+a*1.4,footY,3,1.4,p.foot);
+    R(7+b,13,3,2.6,p.attire2); R(7+b*1.4,15.4,3,2.2,p.attire2); R(7+b*1.4,footY,3,1.4,p.foot);
+  } else {
+    R(3,13,3,4.6,p.attire2); R(7,13,3,4.6,p.attire2);
+    R(3,footY,3,1.4,p.foot); R(7,footY,3,1.4,p.foot);
+  }
+
+  /* --- torso --- */
+  const ty=7+(breathe?.3:0);
+  R(2,ty,9,6,p.attire); R(9.4,ty,1.6,6,p.attire2);
+  R(2,12,9,1.2,p.belt);
+  if(key==='hanuman'){ R(4,ty+.6,5,4,p.skin); R(5.2,ty+1.4,2.6,.7,'#c0392b');
+    R(1,ty+2.2,2,.8,'#f2c14e'); R(10,ty+2.2,2,.8,'#f2c14e'); }                  // chest tilak + armbands
+  if(key==='ram'){ R(2,ty,1.6,6,'#5e3a1a'); R(9.8,ty+1.6,1.8,.9,'#f2c14e');
+    R(2,ty+4.6,9,.7,'#c0392b'); }                                               // strap + armband + sash
+  if(key==='sita'){ R(2,ty,2.2,6,p.belt); R(4.2,ty+1.2,1.4,4.8,p.belt);
+    R(2.4,ty+.4,1.2,.9,'#fff'); }                                               // pallu drape + border
+  if(key==='raavan'){ R(3.6,ty+.6,5.8,.9,'#f2c14e'); R(6,ty+1.5,1,1,'#ff5555'); }  // necklace + gem
+
+  /* --- arms --- */
+  const armY=7.4+(breathe?.3:0);
+  if(pose==='attack'){
+    R(10.5,armY+1,4.5,1.8,p.skin);                                              // extended arm
+    R(1,armY,2,4.5,p.skin);
+    /* weapon */
+    if(key==='ram'){ ctx.strokeStyle=p.acc; ctx.lineWidth=u;
+      ctx.beginPath(); ctx.arc(15*u,9*u,3.4*u,-1.2,1.2); ctx.stroke();
+      R(13,8.6,4,.7,'#e8e0c8'); }
+    else if(key==='hanuman'){ R(14.6,7.4,1.4,3.4,'#8a5a2b'); ctx.fillStyle='#c8ccd4';
+      ctx.beginPath(); ctx.arc(15.4*u,6.6*u,2.2*u,0,7); ctx.fill(); }
+    else if(key==='raavan'){ R(14.6,4.6,1.2,6,'#c8ccd4'); R(14,10.4,2.4,1,p.acc); }
+    else if(key==='sita'){ ctx.fillStyle='#ffd23e'; ctx.beginPath();
+      ctx.arc(15*u,9.4*u,2*u,0,7); ctx.fill(); ctx.fillStyle='#fff';
+      ctx.beginPath(); ctx.arc(15*u,9.4*u,1*u,0,7); ctx.fill(); }
+  } else if(air){
+    R(1,armY-1.4,2,4,p.skin); R(10,armY-1.4,2,4,p.skin);
+  } else if(run){
+    const s=[1,-1,-1,1][f];
+    R(1,armY+s*.8,2,4.4,p.skin); R(10,armY-s*.8,2,4.4,p.skin);
+  } else {
+    R(1,armY,2,4.6,p.skin); R(10,armY,2,4.6,p.skin);
+  }
+
+  /* --- head --- */
+  const hy=1.4;
+  R(3,hy+1,7,5,p.skin); R(8.6,hy+1,1.4,5,p.skin2);
+  /* hair / crowns / features */
+  if(key==='ram'){ R(3,hy,7,1.6,p.hair); R(2.6,hy+1,1,2.4,p.hair);
+    R(3,hy-.9,7,1,'#f2c14e'); R(5.4,hy-1.7,2.2,1,'#f2c14e'); R(6.1,hy-1.5,.8,.8,'#ff5555');
+    R(6.2,hy+2.6,.6,1.2,'#c0392b'); }                                           // gold crown + jewel + tilak
+  else if(key==='sita'){ R(3,hy,7,1.6,p.hair); R(2.4,hy+1,1.2,3.4,p.hair);
+    R(9.4,hy+1,1.2,3.4,p.hair); R(6.2,hy+2.6,.7,.7,'#c0392b');
+    R(3.2,hy-.5,6.6,.6,'#f2c14e'); R(8.7,hy+.1,1.3,1.3,'#ff8ab0');
+    R(2.5,hy+4.6,.7,1.3,'#f2c14e'); R(9.8,hy+4.6,.7,1.3,'#f2c14e'); }           // tiara + flower + earrings
+  else if(key==='hanuman'){ R(3,hy,7,1.4,p.hair); R(2,hy-.6,1.6,2,p.hair);
+    R(9.4,hy-.6,1.6,2,p.hair); R(4.6,hy+3.4,4,2.2,'#f7ddb8');
+    R(3.6,hy+1.9,5.8,.5,p.skin2); R(5.6,hy-.7,1.8,.8,'#f2c14e'); }              // brow ridge + gold band
+  else if(key==='raavan'){
+    for(let i=0;i<4;i++){ R(1.4+i*2.9,hy-1.5,1.8,1.5,p.skin); R(1.4+i*2.9,hy-2.1,1.8,.7,p.acc); }
+    R(2.6,hy,8,1.2,p.acc); R(5,hy-3,3,1.1,p.acc); R(6.1,hy-3.9,.9,1,'#ff5555');
+    R(3,hy+4.2,7,.9,p.hair);
+    if(pose==='attack'){ R(4.4,hy+2.2,1.4,1.4,'#ff5555'); R(7.2,hy+2.2,1.4,1.4,'#ff5555'); } } // tall crown + gem + rage eyes
+  else if(key==='rakshasa'){ ctx.fillStyle=p.acc;
+    ctx.beginPath();ctx.moveTo(3*u,hy*u);ctx.lineTo(2*u,(hy-2)*u);ctx.lineTo(4.4*u,hy*u);ctx.fill();
+    ctx.beginPath();ctx.moveTo(8.6*u,hy*u);ctx.lineTo(11*u,(hy-2)*u);ctx.lineTo(10*u,hy*u);ctx.fill();
+    R(3,hy,7,1.2,p.hair); }
+  else if(key==='vanara'){ R(3,hy,7,1.4,p.hair); R(2.2,hy+.4,1.4,1.6,p.hair);
+    R(9.4,hy+.4,1.4,1.6,p.hair); R(4.6,hy+3.4,4,2,'#e0c49e'); }
+  /* eyes + mouth */
+  const eyeC = key==='rakshasa' ? '#ffd23e' : '#14142a';
+  R(4.6,hy+2.4,1,1.1,eyeC); R(7.4,hy+2.4,1,1.1,eyeC);
+  R(5.8,hy+4.6,1.6,.6,p.skin2);
+  ctx.restore();
+}
+function drawFlyer(x,y,u,flap,frozen){
+  ctx.save(); ctx.translate(Math.round(x),Math.round(y));
+  const R=(c,r,w,h,col)=>{ctx.fillStyle=col;ctx.fillRect(c*u,r*u,w*u,h*u);};
+  const wy=flap? -1.6:1.2;
+  R(-2,2+wy,4,2,'#3a2359'); R(8,2+wy,4,2,'#3a2359');
+  R(-3,1+wy,2,1.6,'#4b2e73'); R(11,1+wy,2,1.6,'#4b2e73');
+  R(2,1,6,6,'#4b2e73'); R(3,3,1,1,'#ff5555'); R(6,3,1,1,'#ff5555');
+  R(3,6.4,1,1,'#e8e8e8'); R(6,6.4,1,1,'#e8e8e8');
+  if(frozen){ ctx.strokeStyle='#9fd7ff'; ctx.lineWidth=2; ctx.strokeRect(-3*u,0,16*u,8*u); }
+  ctx.restore();
+}
+function drawDeer(x,y,t){
+  ctx.save(); ctx.translate(x,y+Math.sin(t*6)*3);
+  ctx.fillStyle='#f2c14e';
+  ctx.fillRect(4,10,22,10); ctx.fillRect(22,2,8,10);
+  ctx.fillRect(6,20,4,8); ctx.fillRect(20,20,4,8);
+  ctx.fillStyle='#ffe9b0'; ctx.fillRect(8,12,6,3); ctx.fillRect(17,14,4,3);
+  ctx.fillStyle='#b8860b'; ctx.fillRect(26,-4,2,7); ctx.fillRect(30,-4,2,7);
+  ctx.fillRect(25,-6,4,2); ctx.fillRect(29,-7,4,2);
+  ctx.fillStyle='#241a10'; ctx.fillRect(27,5,2,2);
+  ctx.restore();
+}
+
+/* ---------------- Themes & ambient life ---------------- */
+const THEMES={
+  panchavati:{sky:['#ffe9b0','#8fd07a'],far:'#3f7d4c',near:'#2c5e37',ground:'#5a3d1e',grass:'#3f9948',
+              plat:'#7a5a30',label:'Panchavati Forest',music:'forest',ambient:'fireflies'},
+  vatika:    {sky:['#141433','#33305e'],far:'#241f47',near:'#3c2f63',ground:'#2e2547',grass:'#7a5a9e',
+              plat:'#584579',label:'Ashok Vatika',music:'night',night:true,ambient:'petals'},
+  ocean:     {sky:['#aee3ff','#3f9fd6'],far:'#2a7fb8',near:'#1f628f',ground:'#8a6a3e',grass:'#c9a35e',
+              plat:'#8a6a3e',label:'The Great Ocean',music:'action',water:true,ambient:'gulls'},
+  lankaburn: {sky:['#2a0d0d','#7a2410'],far:'#4d160e',near:'#301008',ground:'#3d2020',grass:'#d9541f',
+              plat:'#5e3030',label:'Lanka Burns',music:'boss',ember:true,ambient:'embers'},
+  lankagold: {sky:['#f2c14e','#a8632a'],far:'#7a4a1f',near:'#5e3617',ground:'#4d3016',grass:'#f2c14e',
+              plat:'#8a6a3e',label:'Golden Lanka',music:'action',ambient:'sparkles'},
+  battlefield:{sky:['#e07a3f','#5e2626'],far:'#47201f',near:'#301414',ground:'#3d2424',grass:'#8a5a3e',
+              plat:'#5e3a3a',label:'The Field of Dharma',music:'boss',ambient:'embers'}
+};
+const ambient=[];
+function updateAmbient(theme,dt,camX){
+  const kind=THEMES[theme].ambient;
+  if(ambient.length<26 && Math.random()<.3){
+    if(kind==='fireflies') ambient.push({k:'ff',x:camX+Math.random()*W,y:150+Math.random()*300,t:Math.random()*7,life:8});
+    if(kind==='petals')    ambient.push({k:'pe',x:camX+Math.random()*W,y:-10,vx:20+Math.random()*20,vy:26+Math.random()*20,t:Math.random()*7,life:14});
+    if(kind==='embers')    ambient.push({k:'em',x:camX+Math.random()*W,y:H+10,vy:-(30+Math.random()*50),t:0,life:9});
+    if(kind==='gulls')     ambient.push({k:'gu',x:camX-40,y:60+Math.random()*120,vx:40+Math.random()*30,t:0,life:26});
+    if(kind==='sparkles')  ambient.push({k:'sp',x:camX+Math.random()*W,y:100+Math.random()*300,t:0,life:1.4});
+  }
+  for(const a of ambient){ a.t+=dt; a.life-=dt;
+    if(a.k==='pe'){a.x+=Math.sin(a.t*2)*30*dt+a.vx*dt*.3; a.y+=a.vy*dt;}
+    if(a.k==='em'){a.y+=a.vy*dt; a.x+=Math.sin(a.t*3)*20*dt;}
+    if(a.k==='gu'){a.x+=a.vx*dt;}
+  }
+  for(let i=ambient.length-1;i>=0;i--) if(ambient[i].life<=0) ambient.splice(i,1);
+}
+function drawAmbient(camX){
+  for(const a of ambient){
+    const x=a.x-camX;
+    if(a.k==='ff'){ const gl=.4+.6*Math.abs(Math.sin(a.t*3));
+      ctx.fillStyle=`rgba(255,240,140,${gl})`; ctx.fillRect(x+Math.sin(a.t)*8,a.y+Math.cos(a.t*1.3)*6,3,3); }
+    else if(a.k==='pe'){ ctx.fillStyle='rgba(230,140,190,.85)'; ctx.fillRect(x,a.y,4,3); }
+    else if(a.k==='em'){ ctx.fillStyle=`rgba(255,${120+Math.sin(a.t*9)*60|0},50,.9)`; ctx.fillRect(x,a.y,3,3); }
+    else if(a.k==='gu'){ ctx.strokeStyle='rgba(255,255,255,.8)'; ctx.lineWidth=2;
+      const w2=Math.sin(a.t*6)*4; ctx.beginPath();
+      ctx.moveTo(x-6,a.y+w2); ctx.lineTo(x,a.y); ctx.lineTo(x+6,a.y+w2); ctx.stroke(); }
+    else if(a.k==='sp'){ ctx.fillStyle=`rgba(255,235,150,${a.life})`;
+      ctx.fillRect(x,a.y,2,2); ctx.fillRect(x-2,a.y+2,2,2); ctx.fillRect(x+2,a.y+2,2,2); }
+  }
+}
+function drawBG(theme,camX,t){
+  const th=THEMES[theme];
+  const g=ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,th.sky[0]); g.addColorStop(1,th.sky[1]);
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle=th.night?'#f5f0d8':'rgba(255,240,180,.9)';
+  ctx.beginPath(); ctx.arc(W-140,90,th.night?34:44,0,7); ctx.fill();
+  if(th.night){ ctx.fillStyle=th.sky[0]; ctx.beginPath(); ctx.arc(W-152,82,30,0,7); ctx.fill();
+    for(let i=0;i<40;i++){ const sx=(i*97)%W, sy=(i*57)%260;
+      ctx.fillStyle=`rgba(255,255,255,${.3+.5*Math.abs(Math.sin(t*2+i))})`; ctx.fillRect(sx,sy,2,2); } }
+  ctx.fillStyle=th.far;
+  for(let i=-1;i<8;i++){
+    const x=((i*260-camX*.25)%(260*8)+260*8)%(260*8)-260;
+    if(theme==='ocean'){ ctx.fillRect(x,140+((i*37)%50),120,16); ctx.fillRect(x+24,128+((i*37)%50),70,16); }
+    else if(theme.includes('lanka')||theme==='battlefield'){
+      ctx.fillRect(x,210,90,250); ctx.fillRect(x+25,170,40,60);
+      ctx.beginPath(); ctx.moveTo(x+45,130); ctx.lineTo(x+15,180); ctx.lineTo(x+75,180); ctx.fill();
+      ctx.fillStyle='rgba(255,220,120,.25)'; ctx.fillRect(x+38,190,14,18); ctx.fillStyle=th.far; }
+    else { ctx.fillRect(x+40,250,16,130); ctx.beginPath(); ctx.arc(x+48,230,52,0,7); ctx.fill(); }
+  }
+  ctx.fillStyle=th.near;
+  for(let i=-1;i<10;i++){
+    const x=((i*200-camX*.5)%(200*10)+200*10)%(200*10)-200;
+    if(theme==='ocean'){ ctx.beginPath(); ctx.arc(x+60,470+Math.sin(t*2+i)*4,60,Math.PI,0); ctx.fill(); }
+    else if(theme.includes('lanka')||theme==='battlefield'){ ctx.fillRect(x,300,60,200); }
+    else { ctx.fillRect(x+20,320,12,100); ctx.beginPath(); ctx.arc(x+26,306,36,0,7); ctx.fill();
+      if(theme==='vatika'){ ctx.fillStyle='#d96a9e'; ctx.fillRect(x+10,290,8,8); ctx.fillRect(x+36,300,8,8); ctx.fillStyle=th.near; } }
+  }
+  drawAmbient(camX*0.8);
+}
+
+/* ---------------- Levels ----------------
+ #=solid ==platform ^=spikes o=diya H=heart E=rakshasa F=flyer V=vanara
+ B=bush C=checkpoint G=goal W=water D=deer R=boss P=start
+ M=moving platform(h) N=moving platform(v) X=crumble U=spring
+ Y=vine I=fire column ~=sinking stone Q=secret fog                      */
+const LEVELS={
+ram1:{theme:'panchavati',title:'Chapter 1 — The Golden Deer',map:[
+"                                                                                                                        ",
+"                 Y                          o o o              Y                     QQQQ                               ",
+"                                           =====                                    QooQ                               ",
+"        o                o                            o                 M           QooQ          o o                  ",
+"       ===              ===       E                  ===                            QQXQ         =====                 ",
+"  P              E                =====      U                    E          o                             E     H D G ",
+"##########  ###########  ############### ======== ##########  #########   =====  ########## ###########################",
+"##########  ###########  ###############          ##########  #########          ########## ###########################",
+"##########^^###########  ###############          ##########^^#########          ########## ###########################",
+"########################################        C ##########################################",
+"############################################################################################"]},
+ram2:{theme:'panchavati',title:'Chapter 2 — Journey South',map:[
+"                                                                                                                        ",
+"              F                 Y                        F                 Y                  QQQQQ                     ",
+"                      o                   o o                    o                 o          QoooQ                     ",
+"          o          ===       X X       =====       M          ===       X X    ====         QQQQQ                    ",
+"         ===                                                                                    U       o o            ",
+"  P               E           =====               E        U          E                C               =====  E      G ",
+"########   ####  ######   ####     ####      #### ####  ======  ##########   ####   #############   ###################",
+"########   ####  ######   ####     ####      #### ####          ##########   ####   #############   ###################",
+"########^^^####^^######^^^####^^^^^####^^^^^^####^####^^^^^^^^^^##########^^^####^^^#############^^^###################",
+"########################################################################################################################",
+"########################################################################################################################"]},
+sita1:{theme:'panchavati',title:'Chapter 1 — Shadows of Panchavati',stealth:true,map:[
+"                                                                                                                        ",
+"                          Y                                    Y                        QQQQ                            ",
+"                                    o                                     o            QooQ                            ",
+"                    B              ===          B             ===        ===           QQQQ                            ",
+"        o                                E              E                                        E                     ",
+"  P    ===      B         E                     C B                B           E         B            U      H     G   ",
+"###############################################################################################   =====################",
+"###############################################################################################        ################",
+"###############################################################################################        ################",
+"########################################################################################################################",
+"########################################################################################################################"]},
+sita2:{theme:'vatika',title:'Chapter 2 — Ashok Vatika',map:[
+"                                                                                                                        ",
+"               F                     o                     F                  o          QQQQQ                          ",
+"                          o         ===          o                  o      =====         QoHoQ                          ",
+"           o             ===                    ===       E        ===                   QQQQQ                          ",
+"          ===                     E                     =====                    E         U          N                 ",
+"  P                 E            X X X        E                N        C      =====             o         E         G ",
+"#########  ######  ########  ####     ######   ########   ##########      ####      #####     =====    ################",
+"#########  ######  ########  ####     ######   ########   ##########      ####      #####              ################",
+"#########^^######^^########^^####^^^^^######^^^########^^^##########^^^^^^####^^^^^^#####^^^^^^^^^^^^^^################",
+"########################################################################################################################",
+"########################################################################################################################"]},
+han1:{theme:'ocean',title:'Chapter 1 — Leap of Faith',map:[
+"                                                                                                                        ",
+"                                                     QQQQQ                                                              ",
+"                     o                o  F           QoooQ            o                  F             o                ",
+"        o           ===      o      ===              QQQQQ         ======        o                    ===              ",
+"  P    ===                  ===              M             C  U                 ===          M                  H   G   ",
+" ====        ~~~~                 F        ~~~~            =====      ~~~~             ~~~~        ~~~~      ========== ",
+"                                                                                                                        ",
+"WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+"WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+"WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW"]},
+han2:{theme:'lankaburn',title:'Chapter 2 — Lanka Burns',map:[
+"                                                                                                                        ",
+"             o                        o                       o o                  QQQQQ                                ",
+"            ===        F            ====          F          =====        F       QoooQ                                 ",
+"                                 o                                                QQQQQ            o                    ",
+"       o           E            ===         E          M                E           X             ===       H          ",
+"  P   ===        ======                                          C           X X        E    U          I          G   ",
+"######     ####          ####  I     ##### I    ####          ##########          ####     =====   ####################",
+"######     ####          ####        #####      ####          ##########          ####             ####################",
+"######^^^^^####^^^^^^^^^^####^^^^^^^^#####^^^^^^####^^^^^^^^^^##########^^^^^^^^^^####^^^^^^^^^^^^^####################",
+"########################################################################################################################",
+"########################################################################################################################"]},
+rav1:{theme:'lankagold',title:'Chapter 1 — Gates of Lanka',map:[
+"                                                                                                                        ",
+"                                                                                                                        ",
+"                  o                      o                          o              QQQQ                                 ",
+"                 ===          V         ===            V           ===            QooQ                                  ",
+"        o                  =====                     =====                        QXQQ         o o                      ",
+"  P    ===      V                    V       CU               V           V                   =====    V       H    G   ",
+"#####################################      ==========================================  ################################",
+"#####################################      ==========================================  ################################",
+"#####################################      ==========================================^^################################",
+"########################################################################################################################",
+"########################################################################################################################"]},
+rav2:{theme:'lankagold',title:'Chapter 2 — The Palace Siege',map:[
+"                                                                                                                        ",
+"              V                     o                     V                  o           QQQQQ                          ",
+"                         o         ===          o                  o      =====          QoooQ                          ",
+"          o             ===                    ===       V        ===                    QQQQQ                          ",
+"         ===                     V           I         =====                    V          U        N                   ",
+"  P                V            X X X                           C     I       =====             o        V           G ",
+"########  ######  ########  ####     ######   ########   ##########      ####      #####      =====   #################",
+"########  ######  ########  ####     ######   ########   ##########      ####      #####              #################",
+"########^^######^^########^^####^^^^^######^^^########^^^##########^^^^^^####^^^^^^#####^^^^^^^^^^^^^^#################",
+"########################################################################################################################",
+"########################################################################################################################"]},
+finale:{theme:'battlefield',title:'Final Chapter — Ram vs. Raavan',boss:true,map:[
+"                                                            ",
+"                                                            ",
+"                                                            ",
+"          o                o                o               ",
+"         ===      M       ===       M      ===              ",
+"                                                            ",
+"   P                       R                     H   U    G ",
+"#################################################### ======",
+"############################################################",
+"############################################################",
+"############################################################"]}
+};
+
+/* ---------------- Story & characters ---------------- */
+const CHARS={
+  ram:    {name:'RAM',    color:'#5f8fe6', tag1:'The prince of Ayodhya', tag2:'Bow · Divine arrow · Dash',
+           hint:'A · arrow   S · divine arrow   D · dash'},
+  sita:   {name:'SITA',   color:'#d94f4f', tag1:'Daughter of the Earth', tag2:'Float · Radiance · Courage',
+           hint:'Hold ▲ to FLOAT down   S · freeze radiance'},
+  hanuman:{name:'HANUMAN',color:'#d97a1f', tag1:'Son of the Wind', tag2:'DOUBLE JUMP · Wall jump · Gada',
+           hint:'▲▲ · double jump!   Wall-slide + ▲ · wall jump'},
+  raavan: {name:'RAAVAN', color:'#8a5ac2', tag1:'King of Lanka', tag2:'Ground pound · Ten-heads blast',
+           hint:'▼ in air · GROUND POUND   S · ten-heads blast'}
+};
+const SCRIPTS={
+ram:[
+ {story:['PANCHAVATI. A golden deer dances at the edge of the hermitage.','Sita\'s eyes shine. "Bring it to me," she smiles.','Ram lifts his bow. Something about this deer is... wrong.'],char:'ram'},
+ {level:'ram1'},
+ {quiz:'ram1q'},
+ {story:['The deer was Maricha — a demon\'s trick.','The hermitage is empty. Sita is gone, carried south by Raavan.','Ram turns toward the horizon. Lanka awaits.'],char:'ram'},
+ {level:'ram2'},
+ {quiz:'ram2q'},
+ {story:['With Hanuman\'s word and the vanara army at his back,','Ram stands before the gates of Lanka.','Ahead: the ten-headed king. Behind: everything he loves.'],char:'ram'},
+ {level:'finale',char:'ram'},
+ {ending:true}],
+sita:[
+ {story:['PANCHAVATI. The golden deer has drawn Ram away.','A wandering sage begs at the door — but his shadow has ten heads.','Sita must stay unseen. Hide in the groves. Survive.'],char:'sita'},
+ {level:'sita1'},
+ {quiz:'sita1q'},
+ {story:['Carried across the sea to Ashok Vatika, Raavan\'s garden prison.','But Sita is the daughter of the Earth itself.','Her radiance burns brighter than any flame. She will not yield.'],char:'sita'},
+ {level:'sita2'},
+ {quiz:'sita2q'},
+ {story:['A small monkey drops from the trees — Hanuman!','He gives her Ram\'s ring. "He is coming," he says.','Far away, Ram reaches the gates of Lanka. The story is his now.'],char:'ram'},
+ {level:'finale',char:'ram'},
+ {ending:true}],
+hanuman:[
+ {story:['The ocean stretches a hundred yojanas to Lanka.','The vanaras despair — who could ever cross it?','Hanuman remembers who he is. The Son of the Wind crouches... and LEAPS.'],char:'hanuman'},
+ {level:'han1'},
+ {quiz:'han1q'},
+ {story:['Lanka found. Sita found. Ram\'s ring delivered.','But Hanuman is captured — his tail set alight.','Very well. If Lanka wants fire, Lanka shall have it.'],char:'hanuman'},
+ {level:'han2'},
+ {quiz:'han2q'},
+ {story:['Hanuman returns across the sea: "I have seen her. She lives."','Ram\'s army builds a bridge of floating stones.','Now Ram himself walks to the gates. The ending belongs to him.'],char:'ram'},
+ {level:'finale',char:'ram'},
+ {ending:true}],
+raavan:[
+ {story:['LANKA, city of gold. King Raavan has taken what he desired.','But an army of monkeys and bears crosses the sea on a bridge of stone.','Absurd. Let them come. Defend the gates.'],char:'raavan'},
+ {level:'rav1'},
+ {quiz:'rav1q'},
+ {story:['The outer walls have fallen. Kumbhakarna sleeps. The generals are gone.','In the palace, Raavan hears it: a single bowstring, drawn.','Ram has come. And deep down, Raavan always knew he would.'],char:'raavan'},
+ {level:'rav2'},
+ {quiz:'rav2q'},
+ {story:['On the field of Dharma, the two face each other at last.','And here the tale does what it has always done —','it leaves the ten-headed king, and follows Ram to the end.'],char:'ram'},
+ {level:'finale',char:'ram'},
+ {ending:true}]};
+
+
+/* ---------------- STEP 3: Quiz bank + Gurukul ---------------- */
+const QUIZ={
+ram1q:[
+ {q:'The golden deer that lured Ram away was really…',o:['The demon Maricha in disguise','A blessed forest spirit','Raavan himself'],a:0,e:'Maricha, Raavan\'s uncle, took the deer\'s form as a trick.'},
+ {q:'Who asked Ram to catch the golden deer?',o:['Lakshman','Sita','Hanuman'],a:1,e:'Sita was enchanted by its beauty and asked Ram to bring it.'},
+ {q:'While Ram chased the deer, what happened at the hermitage?',o:['It caught fire','Sita was carried away by Raavan','Bharat arrived'],a:1,e:'Raavan abducted Sita and flew south toward Lanka.'}],
+ram2q:[
+ {q:'Who became Ram\'s greatest ally on the journey south?',o:['Hanuman and the vanara army','The king of Kashi','The ocean god alone'],a:0,e:'Hanuman and Sugriva\'s vanaras joined Ram\'s cause.'},
+ {q:'How did Ram\'s army cross the sea to Lanka?',o:['On the backs of whales','A bridge of floating stones','Raavan let them in'],a:1,e:'The vanaras built Rama Setu — a bridge of floating stones.'},
+ {q:'Who rules Lanka?',o:['Kumbhakarna','Vibhishan','Raavan, the ten-headed king'],a:2,e:'Raavan, the mighty ten-headed king, rules golden Lanka.'}],
+sita1q:[
+ {q:'The begging sage at Sita\'s door was truly…',o:['A hungry traveller','Raavan in disguise','The sage Vishwamitra'],a:1,e:'Raavan disguised himself as a sage to reach Sita.'},
+ {q:'Where was Sita held captive in Lanka?',o:['Ashok Vatika, the garden','The palace dungeon','A mountain cave'],a:0,e:'She was kept in Ashok Vatika, Raavan\'s garden grove.'},
+ {q:'What protected Sita through her captivity?',o:['A magic shield','Her unshakable virtue and courage','A vanara guard'],a:1,e:'Her radiance and resolve — she never yielded.'}],
+sita2q:[
+ {q:'Who brought Sita a token of hope in the garden?',o:['Hanuman, with Ram\'s ring','Lakshman, with a letter','A golden bird'],a:0,e:'Hanuman gave her Ram\'s ring: "He is coming."'},
+ {q:'Sita is called the daughter of…',o:['The Ocean','The Earth','The Moon'],a:1,e:'Janaki, daughter of the Earth — found in a furrow by King Janak.'},
+ {q:'What message did Sita send back to Ram?',o:['Forget me','Come soon — I live and I wait','Attack at dawn'],a:1,e:'That she lives, endures, and waits for him.'}],
+han1q:[
+ {q:'How wide was the ocean Hanuman leapt to Lanka?',o:['A hundred yojanas','Ten yojanas','A thousand yojanas'],a:0,e:'One mighty leap across a hundred yojanas of sea.'},
+ {q:'Hanuman is the son of…',o:['Indra, the storm king','Vayu, the wind','Surya, the sun'],a:1,e:'Son of the Wind — that is why he can fly.'},
+ {q:'What did Hanuman carry to give Sita?',o:['Ram\'s ring','A garland','A written scroll'],a:0,e:'Ram\'s ring, proof that rescue was coming.'}],
+han2q:[
+ {q:'When Lanka set Hanuman\'s tail on fire, he…',o:['Fled to the sea','Burned Lanka with his blazing tail','Surrendered'],a:1,e:'He leapt roof to roof and set golden Lanka alight.'},
+ {q:'What word did Hanuman bring back across the sea?',o:['"She lives."','"Lanka has fallen."','"Turn back."'],a:0,e:'"I have seen her. She lives." — hope for the whole army.'},
+ {q:'What did the vanara army build after his return?',o:['A fleet of ships','A bridge of floating stones','A tunnel'],a:1,e:'Rama Setu — the stone bridge to Lanka.'}],
+rav1q:[
+ {q:'What crossed the sea toward Lanka?',o:['An army of monkeys and bears on a stone bridge','A fleet of a thousand ships','A storm of arrows'],a:0,e:'The vanara and bear army, over the floating-stone bridge.'},
+ {q:'Lanka is famed as the city of…',o:['Silver','Gold','Iron'],a:1,e:'Golden Lanka — built by Vishwakarma himself.'},
+ {q:'Who warned Raavan to return Sita and avoid war?',o:['His brother Vibhishan','His son Indrajit','Kumbhakarna'],a:0,e:'Vibhishan counselled peace — and was cast out for it.'}],
+rav2q:[
+ {q:'Which giant slept through most of the war?',o:['Indrajit','Kumbhakarna','Maricha'],a:1,e:'Kumbhakarna, who slept six months at a time.'},
+ {q:'The sound Raavan hears in his palace is…',o:['Temple bells','A single bowstring, drawn','Thunder'],a:1,e:'Ram\'s bowstring — the end approaching.'},
+ {q:'The final battle is fought on the field of…',o:['Kurukshetra','Dharma','Panipat'],a:1,e:'A battle of dharma — right against ten-headed pride.'}]};
+
+const KANDAS=[
+{name:'Bala Kanda',sub:'The Boyhood',pages:[
+ 'King Dasharath of Ayodhya has four sons. The eldest, Ram, is dharma itself in human form — calm, just, and strong.',
+ 'The sage Vishwamitra takes young Ram and Lakshman to guard his forest rites. Ram fells the demoness Tataka with a single arrow.',
+ 'In Mithila, Ram lifts and strings the great bow of Shiva — and breaks it. He wins the hand of Sita, daughter of the Earth.'],
+ quiz:[{q:'Whose mighty bow did Ram break in Mithila?',o:['Indra\'s','Shiva\'s','Vishnu\'s'],a:1,e:'The bow of Shiva — no other prince could even lift it.'},
+ {q:'Ram is the eldest son of which king?',o:['Janak','Dasharath','Sugriva'],a:1,e:'King Dasharath of Ayodhya.'},
+ {q:'Who did Ram marry?',o:['Urmila','Sita','Mandavi'],a:1,e:'Sita, found by King Janak in a furrow of the Earth.'}]},
+{name:'Ayodhya Kanda',sub:'The Exile',pages:[
+ 'On the eve of Ram\'s coronation, queen Kaikeyi claims two old boons: her son Bharat shall be king — and Ram shall be exiled fourteen years.',
+ 'Ram accepts without anger. "A promise of my father is my promise." Sita and Lakshman walk into the forest beside him.',
+ 'Bharat refuses the throne. He places Ram\'s sandals upon it and rules only as a caretaker, waiting for his brother\'s return.'],
+ quiz:[{q:'How long was Ram\'s exile?',o:['Seven years','Fourteen years','Twelve years'],a:1,e:'Fourteen years in the forest.'},
+ {q:'Who joined Ram in exile?',o:['Sita and Lakshman','Bharat and Shatrughna','Hanuman'],a:0,e:'His wife Sita and brother Lakshman.'},
+ {q:'What did Bharat place on the throne?',o:['Ram\'s crown','Ram\'s sandals','Ram\'s bow'],a:1,e:'Ram\'s sandals — ruling only in his brother\'s name.'}]},
+{name:'Aranya Kanda',sub:'The Forest',pages:[
+ 'Deep in Panchavati, the demoness Shurpanakha is spurned and humiliated. She flees to her brother — Raavan, king of Lanka.',
+ 'Raavan sends Maricha as a golden deer. Sita begs Ram to catch it; the deer\'s dying cry mimics Ram\'s voice, drawing Lakshman away too.',
+ 'A false sage stands at the empty door. Raavan seizes Sita and rises into the sky. The great vulture Jatayu dies trying to stop him.'],
+ quiz:[{q:'Whose humiliation sparked Raavan\'s revenge?',o:['Shurpanakha\'s','Tataka\'s','Mandodari\'s'],a:0,e:'Shurpanakha, Raavan\'s sister.'},
+ {q:'Who died defending Sita in the sky?',o:['Sampati','Jatayu','Garuda'],a:1,e:'The noble vulture Jatayu.'},
+ {q:'The golden deer\'s dying cry imitated…',o:['A tiger','Ram\'s voice','A conch'],a:1,e:'It mimicked Ram, luring Lakshman from Sita\'s side.'}]},
+{name:'Kishkindha Kanda',sub:'The Alliance',pages:[
+ 'Ram meets Hanuman — and through him the exiled monkey king Sugriva. Ram helps Sugriva reclaim his throne from Vali.',
+ 'In return, the vanara nation rises. Search parties scatter to every horizon to find where Raavan has hidden Sita.',
+ 'At the southern sea, old Sampati tells them: she is in Lanka, across a hundred yojanas of water. All eyes turn to Hanuman.'],
+ quiz:[{q:'Which monkey king did Ram help to the throne?',o:['Vali','Sugriva','Angad'],a:1,e:'Sugriva, after defeating his brother Vali.'},
+ {q:'Who first brought Ram and Sugriva together?',o:['Hanuman','Jambavan','Nala'],a:0,e:'Hanuman, in the guise of a young brahmin.'},
+ {q:'Who revealed that Sita was in Lanka?',o:['A fisherman','Sampati the vulture','A sea spirit'],a:1,e:'Sampati, brother of fallen Jatayu.'}]},
+{name:'Sundara Kanda',sub:'The Leap',pages:[
+ 'Hanuman remembers his own forgotten power, grows vast as a mountain, and leaps the ocean in a single bound.',
+ 'In Ashok Vatika he finds Sita, gives her Ram\'s ring, and offers to carry her home. She refuses — Ram himself must come.',
+ 'Captured and set aflame, Hanuman burns Lanka with his own blazing tail, then leaps home with the words: "She lives."'],
+ quiz:[{q:'Where did Hanuman find Sita?',o:['The palace roof','Ashok Vatika','A sea cave'],a:1,e:'In the Ashok grove, under a shimshapa tree.'},
+ {q:'Why did Sita refuse to be carried back?',o:['She feared the sea','Ram himself must rescue her','Hanuman was too small'],a:1,e:'Honour demanded Ram come for her himself.'},
+ {q:'What did Hanuman do when his tail was lit?',o:['Dove into the sea','Burned Lanka with it','Begged mercy'],a:1,e:'He turned Lanka\'s cruelty into its own fire.'}]},
+{name:'Yuddha Kanda',sub:'The War',pages:[
+ 'The stone bridge is built. The army crosses. Vibhishan, cast out of Lanka for speaking truth, joins Ram and is embraced.',
+ 'The war shakes the three worlds: Lakshman falls and is saved by the Sanjivani herb — Hanuman carries the whole mountain.',
+ 'At last Ram and Raavan face each other. The Brahmastra flies. The ten-headed king falls, and dharma stands.'],
+ quiz:[{q:'Who left Lanka to join Ram\'s side?',o:['Indrajit','Vibhishan','Kumbhakarna'],a:1,e:'Vibhishan, Raavan\'s righteous brother.'},
+ {q:'What did Hanuman fetch to save Lakshman?',o:['Sacred water','The Sanjivani herb (the whole mountain!)','A physician'],a:1,e:'Unable to identify the herb, he brought the entire mountain.'},
+ {q:'Which weapon ended Raavan?',o:['The Brahmastra','A trident','Hanuman\'s mace'],a:0,e:'The Brahmastra, loosed from Ram\'s bow.'}]},
+{name:'Uttara Kanda',sub:'The Return',pages:[
+ 'Fourteen years end. Ram, Sita and Lakshman fly home on the Pushpak Vimana as Ayodhya lights ten thousand diyas.',
+ 'That festival of lamps is remembered still — every Diwali, rows of diyas welcome Ram home again.',
+ 'Ram is crowned. His reign — Ram Rajya — becomes the timeless dream of a just world. The tale ends where all diyas begin.'],
+ quiz:[{q:'What flying craft carried Ram home?',o:['Garuda','The Pushpak Vimana','A cloud chariot'],a:1,e:'The Pushpak Vimana, taken from Raavan\'s treasury.'},
+ {q:'Which festival celebrates Ram\'s return?',o:['Holi','Diwali','Navratri'],a:1,e:'Diwali — the festival of lights.'},
+ {q:'Ram\'s ideal reign is remembered as…',o:['Ram Rajya','Satya Yuga','Swarna Kala'],a:0,e:'Ram Rajya — the model of a just kingdom.'}]}];
+SAVE.gurukul=SAVE.gurukul||{done:{},score:0};
+
+/* ---------------- Game state ---------------- */
+const G={mode:'title',startChar:'ram',playChar:'ram',script:null,step:0,storyLine:0,
+         runHearts:5,entry:null,unlockToast:null,pausedFrom:'play',
+         kbuf:'',next:null,boardTab:0,daily:null,gravMul:1,rushT:0,
+         quiz:null,guru:{phase:'menu',kanda:0,page:0,qIdx:0,correct:0,sel:0,fb:-1},
+         selIndex:0,diyas:0,score:0,combo:0,comboT:0,t:0,shakeT:0,shakeMag:0,freezeT:0,
+         toast:'',toastT:0,clearT:0};
+let level=null;
+function shake(mag,t){ G.shakeMag=Math.max(G.shakeMag,mag); G.shakeT=Math.max(G.shakeT,t); }
+function hitPause(t){ G.freezeT=Math.max(G.freezeT,t); }
+function toast(msg){ G.toast=msg; G.toastT=1.6; }
+function addCombo(){
+  G.combo++; G.comboT=4;
+  G.score+=10*G.combo;
+  if(G.combo>=2){ SFX.combo(Math.min(G.combo,8)); }
+}
+function startScript(k){ if(!SAVE.unlocked[k]){SFX.hit();return;} G.daily=null;G.gravMul=1;G.rushT=0; G.startChar=k; G.playChar=k; G.script=SCRIPTS[k];
+  G.step=0; G.diyas=0; G.score=0; G.combo=0; G.runHearts=5; G.unlockToast=null; runStep(); }
+function runStep(){
+  const s=G.script[G.step];
+  if(!s){G.mode='title';Music.play('night');return;}
+  if(s.ending){
+    G.mode='ending';Music.play('forest');SFX.win();
+    if(!SAVE.completed[G.startChar]){
+      SAVE.completed[G.startChar]=true;
+      for(const h of HERO_ORDER){ if(!SAVE.unlocked[h]){ SAVE.unlocked[h]=true; G.unlockToast=h; break; } }
+    }
+    if((SAVE.best[G.startChar]||0)<G.score) SAVE.best[G.startChar]=G.score;
+    lbAdd('STORY',G.score);
+    saveGame(); return;}
+  if(s.quiz){G.quiz={bank:QUIZ[s.quiz],idx:0,sel:0,fb:-1,correct:0};G.mode='quiz';Music.play('night');return;}
+  if(s.story){G.mode='story';G.storyLine=0;if(s.char)G.playChar=s.char;Music.play('night');return;}
+  if(s.level){if(s.char)G.playChar=s.char;loadLevel(s.level);G.mode='play';
+    G.entry={score:G.score,diyas:G.diyas,hearts:G.runHearts};
+    Music.play(heroTrack(G.playChar,LEVELS[s.level]));return;}
+}
+function nextStep(){G.step++;runStep();}
+
+/* ---------------- Level load ---------------- */
+function loadLevel(id){
+  const def=LEVELS[id], rows=def.map;
+  const L={id,def,rows,w:0,h:rows.length*TILE,
+    solids:[],hazards:[],water:[],bushes:[],diyas:[],hearts:[],enemies:[],
+    movers:[],crumbles:[],springs:[],vines:[],fires:[],sinks:[],secrets:[],
+    checkpoint:null,goal:null,deer:null,boss:null,projectiles:[],particles:[],
+    camX:0,diyaTotal:0,timeT:0,dmg:0,medal:0};
+  let spawn={x:64,y:64};
+  const secretTiles=[];
+  rows.forEach((row,r)=>{
+    L.w=Math.max(L.w,row.length*TILE);
+    for(let c=0;c<row.length;c++){
+      const ch=row[c],x=c*TILE,y=r*TILE;
+      if(ch==='#'||ch==='=')L.solids.push({x,y,w:TILE,h:TILE});
+      else if(ch==='^')L.hazards.push({x:x+4,y:y+14,w:TILE-8,h:TILE-14});
+      else if(ch==='W')L.water.push({x,y,w:TILE,h:TILE});
+      else if(ch==='B')L.bushes.push({x:x-8,y:y-16,w:TILE+16,h:TILE+16});
+      else if(ch==='o'){L.diyas.push({x:x+8,y:y+8,got:false});L.diyaTotal++;}
+      else if(ch==='H')L.hearts.push({x:x+6,y:y+6,got:false});
+      else if(ch==='C')L.checkpoint={x,y,hit:false};
+      else if(ch==='G')L.goal={x,y:y-TILE*2,w:TILE,h:TILE*3};
+      else if(ch==='D')L.deer={x,y:y-8};
+      else if(ch==='E')L.enemies.push(makeEnemy('rakshasa',x,y));
+      else if(ch==='V')L.enemies.push(makeEnemy('vanara',x,y));
+      else if(ch==='F')L.enemies.push(makeEnemy('flyer',x,y));
+      else if(ch==='R')L.boss=makeBoss(x,y);
+      else if(ch==='P')spawn={x,y:y-6};
+      else if(ch==='M')L.movers.push({ox:x-32,oy:y+8,x:x-32,y:y+8,w:96,h:14,axis:'h',amp:88,spd:1.1,ph:x*.013,dx:0,dy:0});
+      else if(ch==='N')L.movers.push({ox:x-16,oy:y+8,x:x-16,y:y+8,w:96,h:14,axis:'v',amp:70,spd:1.2,ph:x*.017,dx:0,dy:0});
+      else if(ch==='X')L.crumbles.push({x,y,w:TILE,h:TILE,state:'solid',t:0});
+      else if(ch==='U')L.springs.push({x,y:y+14,w:TILE,h:18,anim:0});
+      else if(ch==='Y')L.vines.push({ax:x+16,ay:y+6,len:120,ph:x*.011});
+      else if(ch==='I')L.fires.push({x,y,off:(x*.37)%2.9});
+      else if(ch==='~'){
+        const prev=L.sinks[L.sinks.length-1];
+        if(prev&&prev.y0===y+6&&prev.x+prev.w===x){prev.w+=TILE;}
+        else L.sinks.push({x,y0:y+6,y:y+6,w:TILE,h:14,sink:0,dx:0,dy:0});
+      }
+      else if(ch==='Q')secretTiles.push({x,y});
+    }
+  });
+  /* cluster secret tiles */
+  const seen=new Set();
+  for(const t of secretTiles){
+    const k0=t.x+','+t.y; if(seen.has(k0))continue;
+    const cluster=[t]; seen.add(k0);
+    for(let i=0;i<cluster.length;i++){
+      for(const u of secretTiles){
+        const ku=u.x+','+u.y; if(seen.has(ku))continue;
+        if(Math.abs(u.x-cluster[i].x)<=TILE&&Math.abs(u.y-cluster[i].y)<=TILE){seen.add(ku);cluster.push(u);}
+      }
+    }
+    const minx=Math.min(...cluster.map(q=>q.x)),maxx=Math.max(...cluster.map(q=>q.x))+TILE;
+    const miny=Math.min(...cluster.map(q=>q.y)),maxy=Math.max(...cluster.map(q=>q.y))+TILE;
+    L.secrets.push({tiles:cluster,alpha:1,found:false,bounds:{x:minx,y:miny,w:maxx-minx,h:maxy-miny}});
+  }
+  L.spawn=spawn; level=L;
+  spawnPlayer(spawn.x,spawn.y);
+  ambient.length=0;
+  toast(def.title);
+}
+function makeEnemy(kind,x,y){
+  return {kind,x,y:y+2,w:22,h:28,vx:kind==='flyer'?0:-52,vy:0,hp:kind==='flyer'?1:1,
+          baseY:y,t:Math.random()*6,dead:false,frozen:0,facing:-1,alert:false,kb:0};
+}
+function makeBoss(x,y){
+  return {x,y:y-70,w:52,h:72,vx:70,hp:14,maxhp:14,t:0,shootT:2.4,hurt:0,dead:false,phase:1};
+}
+
+/* ---------------- Player ---------------- */
+let P=null;
+function charStats(k){return{
+  ram:    {sp:230,jump:-560,proj:true, melee:false,jumps:1},
+  sita:   {sp:245,jump:-560,proj:true, melee:false,jumps:1,float:true},
+  hanuman:{sp:240,jump:-580,proj:false,melee:true, jumps:2,wall:true},
+  raavan: {sp:205,jump:-545,proj:false,melee:true, jumps:1,pound:true}
+}[k];}
+function spawnPlayer(x,y){
+  const st=charStats(G.playChar);
+  P={x,y,w:20,h:30,vx:0,vy:0,onGround:false,facing:1,
+     hearts:Math.max(1,Math.min(5,G.runHearts)),inv:0,atkCd:0,spCd:0,dashCd:0,dashT:0,meleeT:0,atkAnim:0,
+     hidden:false,walk:0,dead:false,winT:0,
+     coyote:0,jbuf:0,jumpsLeft:st.jumps,onWall:0,pounding:false,poundLand:0,
+     vine:null,vineCd:0,squash:0,landV:0,ride:null,jcut:false,...st};
+}
+const hit=(a,b)=>a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y;
+function activeSolids(){
+  const out=level.solids.slice();
+  for(const m of level.movers)out.push(m);
+  for(const s of level.sinks)out.push(s);
+  for(const c of level.crumbles)if(c.state!=='gone')out.push(c);
+  return out;
+}
+function moveAndCollide(e,dt,solids){
+  e.x+=e.vx*dt;
+  for(const s of solids){ if(hit(e,s)){
+    if(e.vx>0)e.x=s.x-e.w; else if(e.vx<0)e.x=s.x+s.w;
+    if(e===P&&P.wall&&!P.onGround)P.onWall=(e.vx>0?1:-1)||P.onWall;
+  }}
+  e.vy=Math.min(e.vy+1900*(G.gravMul||1)*dt,980);
+  e.y+=e.vy*dt;
+  e.onGround=false; if(e===P)P.ride=null;
+  for(const s of solids){ if(hit(e,s)){
+    if(e.vy>0){e.y=s.y-e.h;e.vy=0;e.onGround=true;if(e===P)P.ride=s;}
+    else if(e.vy<0){e.y=s.y+s.h;e.vy=0;}
+  }}
+}
+
+/* ---------------- Gameplay update ---------------- */
+function damagePlayer(){
+  if(P.inv>0||P.dead)return;
+  P.hearts--; G.runHearts=P.hearts; level.dmg++; P.inv=1.4; G.combo=0; SFX.hit(); shake(6,.25); hitPause(.08);
+  P.vy=-320; P.vx=-P.facing*200; P.jcut=false;
+  if(P.hearts<=0){P.dead=true;Music.stop();setTimeout(()=>{G.mode='gameover';SFX.over();},700);}
+}
+function respawn(){
+  if(P.hearts<=0)return;
+  const cp=level.checkpoint&&level.checkpoint.hit?level.checkpoint:level.spawn;
+  P.x=cp.x;P.y=cp.y-10;P.vx=0;P.vy=0;P.inv=1.6;P.vine=null;P.pounding=false;
+}
+function hurtEnemy(e,dmg,kb){
+  e.hp-=dmg; e.kb=kb||0;
+  if(e.hp<=0){e.dead=true;SFX.poof();burst(e.x+11,e.y+14,'#c9e8a0',14);addCombo();hitPause(.05);}
+  else SFX.hit();
+}
+function burst(x,y,color,n){
+  for(let i=0;i<n;i++){const a=Math.random()*7,s=90+Math.random()*170;
+    level.particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s-130,life:.5+Math.random()*.3,color,kind:'dot'});}
+}
+function ring(x,y,vr){level.particles.push({x,y,r:8,vr,life:.45,kind:'ring'});}
+
+function updatePlay(dt){
+  const L=level,def=L.def;
+  if(G.freezeT>0){G.freezeT-=dt;return;}
+  L.timeT+=dt;
+  if(G.daily&&G.daily.mod.id==='rush'&&!P.dead&&P.winT<=0){
+    G.rushT-=dt;
+    if(G.rushT<=0){G.rushT=0;P.inv=0;P.hearts=1;damagePlayer();}
+  }
+  if(P.winT>0){
+    P.winT-=dt; G.clearT+=dt;
+    if(P.winT<=0){SFX.win();G.clearT=0;if(G.daily)finishDaily();else nextStep();}
+    return;
+  }
+  if(P.dead){P.y+=P.vy*dt;P.vy+=1900*(G.gravMul||1)*dt;return;}
+
+  /* ---- movers & sinks & crumbles & fires update ---- */
+  for(const m of L.movers){
+    const nx=m.axis==='h'?m.ox+Math.sin(G.t*m.spd+m.ph)*m.amp:m.ox;
+    const ny=m.axis==='v'?m.oy+Math.sin(G.t*m.spd+m.ph)*m.amp:m.oy;
+    m.dx=nx-m.x;m.dy=ny-m.y;m.x=nx;m.y=ny;
+  }
+  for(const s of L.sinks){
+    const standing=P.ride===s;
+    const target=standing?Math.min(s.sink+30*dt,44):Math.max(s.sink-46*dt,0);
+    s.dy=(s.y0+target)-(s.y0+s.sink); s.sink=target; s.y=s.y0+s.sink;
+  }
+  for(const c of L.crumbles){
+    if(c.state==='solid'&&P.ride===c){c.state='arming';c.t=0;}
+    else if(c.state==='arming'){c.t+=dt;if(c.t>.3){c.state='shaking';c.t=0;SFX.crumble();}}
+    else if(c.state==='shaking'){c.t+=dt;if(c.t>.5){c.state='gone';c.t=0;burst(c.x+16,c.y+16,'#9a8a70',8);}}
+    else if(c.state==='gone'){c.t+=dt;if(c.t>3.4&&!hit(P,c)){c.state='solid';}}
+  }
+
+  /* ---- vine riding ---- */
+  P.vineCd-=dt;
+  if(P.vine){
+    const v=P.vine;
+    const th=.55*Math.sin(G.t*1.7+v.ph);
+    const bx=v.ax+Math.sin(th)*v.len, by=v.ay+Math.cos(th)*v.len;
+    const pbx=P._pbx??bx;
+    P.x=bx-P.w/2; P.y=by-8; P.vy=0;
+    P._pbx=bx;
+    if(jumpPressed()){
+      const swingV=(bx-pbx)/dt;
+      P.vx=Math.max(-300,Math.min(300,swingV*1.1));
+      P.vy=-460; P.vine=null; P.vineCd=.5; P.jumpsLeft=P.jumps-1; P.jcut=false;
+      SFX.jump(); ring(P.x+10,P.y+15,260);
+    }
+  } else {
+    /* ---- normal control ---- */
+    const left=keys['ArrowLeft'],right=keys['ArrowRight'];
+    const dir=(right?1:0)-(left?1:0);
+    if(P.dashT>0){P.vx=P.facing*P.sp*2.4;}
+    else P.vx=dir*P.sp;
+    if(dir!==0)P.facing=dir;
+
+    /* jump feel: coyote + buffer + variable height */
+    P.coyote=P.onGround?.12:Math.max(0,P.coyote-dt);
+    if(P.onGround)P.jumpsLeft=P.jumps;
+    P.jbuf=jumpPressed()?.12:Math.max(0,P.jbuf-dt);
+    const wantJump=P.jbuf>0;
+    if(wantJump&&(P.onGround||P.coyote>0)){
+      P.vy=P.jump;P.jbuf=0;P.coyote=0;P.jumpsLeft=P.jumps-1;P.squash=-1;P.jcut=true;SFX.jump();
+    } else if(wantJump&&P.onWall&&P.wall&&!P.onGround){
+      P.vy=-540;P.vx=-P.onWall*300;P.facing=-P.onWall;P.jbuf=0;P.jcut=true;SFX.wallj();
+      ring(P.x+10,P.y+15,200);
+    } else if(wantJump&&P.jumpsLeft>0&&!P.onGround&&P.jumps>1){
+      P.vy=P.jump*.92;P.jumpsLeft--;P.jbuf=0;P.squash=-1;P.jcut=true;SFX.djump();
+      ring(P.x+10,P.y+28,180);
+    }
+    if(!jumpKey()&&P.vy<-160&&P.jcut)P.vy=-160;             // variable jump height (player jumps only)
+    /* sita float */
+    if(P.float&&jumpKey()&&P.vy>60){P.vy=60;
+      if(Math.random()<.3)level.particles.push({x:P.x+Math.random()*20,y:P.y+30,vx:0,vy:40,life:.5,color:'#f2m',kind:'dot',color:'#e88ab8'});}
+    /* wall slide */
+    if(P.wall&&P.onWall&&!P.onGround&&P.vy>130)P.vy=130;
+    /* raavan ground pound */
+    if(P.pound&&!P.onGround&&pressed('ArrowDown')&&!P.pounding){
+      P.pounding=true;P.vy=980;P.vx=0;SFX.dash();
+    }
+    /* dash */
+    if(pressed('KeyD')&&P.dashCd<=0&&!P.pounding){P.dashT=.16;P.dashCd=.75;SFX.dash();
+      for(let i=0;i<5;i++)level.particles.push({x:P.x+10,y:P.y+8+i*4,vx:-P.facing*120,vy:0,life:.3,color:'#fff',kind:'dot'});}
+  }
+  P.dashCd-=dt;P.dashT-=dt;P.atkCd-=dt;P.spCd-=dt;P.inv-=dt;P.meleeT-=dt;P.atkAnim-=dt;
+  P.squash*= (1-8*dt); if(Math.abs(P.squash)<.03)P.squash=0;
+
+  /* hide in bush */
+  P.hidden=false;
+  if(def.stealth&&keys['ArrowDown']&&!P.vine){
+    for(const b of L.bushes)if(hit(P,b))P.hidden=true;
+  }
+
+  /* attack */
+  if(pressed('KeyA')&&P.atkCd<=0&&!def.stealth&&!P.vine){
+    P.atkCd=.34;P.atkAnim=.2;
+    if(P.proj){
+      L.projectiles.push({x:P.x+P.w/2,y:P.y+12,vx:P.facing*540,vy:0,w:14,h:4,
+        from:'player',dmg:1,life:.9,kind:G.playChar==='sita'?'orb':'arrow'});
+      SFX.shoot();
+    } else {P.meleeT=.16;SFX.slash();}
+  }
+  /* specials */
+  if(pressed('KeyS')&&P.spCd<=0&&!P.vine){
+    if(G.playChar==='ram'){P.spCd=3;P.atkAnim=.25;
+      L.projectiles.push({x:P.x+P.w/2,y:P.y+10,vx:P.facing*660,vy:0,w:22,h:7,from:'player',dmg:3,life:1.4,pierce:true,kind:'divine'});
+      SFX.special();shake(3,.15);}
+    else if(G.playChar==='sita'){P.spCd=6;
+      for(const e of L.enemies)if(!e.dead&&Math.abs(e.x-P.x)<280)e.frozen=2.8;
+      ring(P.x+10,P.y+14,380);SFX.freeze();}
+    else if(G.playChar==='raavan'){P.spCd=5;P.atkAnim=.25;
+      for(const e of L.enemies)if(!e.dead&&Math.abs(e.x+11-(P.x+10))<130&&Math.abs(e.y-P.y)<90)hurtEnemy(e,3,P.facing*200);
+      ring(P.x+10,P.y+14,420);SFX.special();shake(6,.25);}
+    else if(G.playChar==='hanuman'&&P.onGround){P.spCd=1.4;P.vy=P.jump*1.28;P.squash=-1;P.jcut=false;
+      ring(P.x+10,P.y+28,300);SFX.special();}
+  }
+
+  const solids=activeSolids();
+  if(!P.vine){
+    P.onWall=0;
+    moveAndCollide(P,dt,solids);
+    /* ride movers/sinks */
+    if(P.ride&&(P.ride.dx||P.ride.dy)){P.x+=P.ride.dx||0;P.y+=P.ride.dy||0;}
+    /* landing */
+    if(P.onGround&&P.landV>350){P.squash=1;}
+    if(P.onGround&&P.pounding){
+      P.pounding=false;SFX.pound();shake(10,.35);hitPause(.06);ring(P.x+10,P.y+28,520);
+      for(const e of L.enemies)if(!e.dead&&Math.abs(e.x+11-(P.x+10))<150&&Math.abs(e.y+14-(P.y+28))<70)hurtEnemy(e,2,Math.sign(e.x-P.x)*260);
+      for(const c of L.crumbles)if(c.state!=='gone'&&Math.abs(c.x+16-(P.x+10))<80&&c.y>P.y){c.state='shaking';c.t=.4;}
+    }
+    P.landV=P.vy;
+    /* grab vines */
+    if(P.vineCd<=0&&!P.onGround){
+      for(const v of L.vines){
+        const th=.55*Math.sin(G.t*1.7+v.ph);
+        const bx=v.ax+Math.sin(th)*v.len,by=v.ay+Math.cos(th)*v.len;
+        if(Math.abs(P.x+10-bx)<28&&Math.abs(P.y+10-by)<34){P.vine=v;P._pbx=bx;SFX.vine();break;}
+      }
+    }
+  }
+  P.walk=Math.abs(P.vx)>10&&P.onGround?P.walk+dt:0;
+  P.x=Math.max(0,Math.min(P.x,L.w-P.w));
+  if(P.y>L.h+180){damagePlayer();respawn();}
+
+  /* springs */
+  for(const sp of L.springs){
+    sp.anim-=dt;
+    if(P.vy>=0&&hit(P,{x:sp.x,y:sp.y-6,w:sp.w,h:12})){
+      P.vy=-880;P.squash=-1;sp.anim=.3;P.jumpsLeft=P.jumps;P.jcut=false;SFX.boing();
+      ring(sp.x+16,sp.y,220);
+    }
+  }
+  /* fire columns */
+  for(const f of L.fires){
+    const ph=(G.t+f.off)%2.9;
+    if(ph>2.0){ const fr={x:f.x+5,y:f.y-92,w:22,h:92};
+      if(hit(P,fr))damagePlayer(); }
+  }
+  /* hazards & water */
+  for(const hz of L.hazards)if(hit(P,hz)){damagePlayer();P.vy=-420;}
+  for(const w2 of L.water)if(hit(P,w2)){damagePlayer();respawn();break;}
+
+  /* pickups */
+  for(const d of L.diyas)if(!d.got&&hit(P,{x:d.x,y:d.y,w:16,h:16})){
+    d.got=true;G.diyas++;addCombo();SFX.collect();
+    level.particles.push({x:d.x+8,y:d.y,vx:0,vy:-60,life:.5,color:'#ffdd55',kind:'dot'});}
+  for(const h2 of L.hearts)if(!h2.got&&hit(P,{x:h2.x,y:h2.y,w:20,h:20})){
+    h2.got=true;P.hearts=Math.min(5,P.hearts+1);G.runHearts=P.hearts;SFX.heart();toast('+1 heart!');}
+  if(L.checkpoint&&!L.checkpoint.hit&&Math.abs(P.x-L.checkpoint.x)<24){
+    L.checkpoint.hit=true;SFX.check();toast('Checkpoint!');}
+
+  /* secrets */
+  for(const s of L.secrets){
+    if(!s.found&&hit(P,s.bounds)){s.found=true;SFX.secret();toast('SECRET FOUND!');G.score+=100;}
+    s.alpha+= (s.found?-2.2:0)*dt; s.alpha=Math.max(0,Math.min(1,s.alpha));
+  }
+
+  /* goal */
+  if(L.goal&&hit(P,L.goal)&&!(def.boss&&L.boss&&!L.boss.dead)){
+    P.winT=2.0;Music.stop(false);
+    const got=L.diyas.filter(d=>d.got).length, all=got===L.diyaTotal;
+    L.medal = all&&L.dmg===0 ? 3 : all ? 2 : 1;
+    if(!G.daily){
+      const mk=medalKey(L.id,G.startChar);
+      if((SAVE.medals[mk]||0)<L.medal) SAVE.medals[mk]=L.medal;
+      SAVE.diyaBank+=got; saveGame();
+      G.runHearts=Math.min(5,P.hearts+2);
+    }
+  }
+
+  /* enemies */
+  for(const e of L.enemies){
+    if(e.dead)continue;
+    e.frozen-=dt;e.t+=dt;
+    if(e.kb){e.x+=e.kb*dt;e.kb*=(1-6*dt);if(Math.abs(e.kb)<8)e.kb=0;}
+    if(e.kind==='flyer'){
+      if(e.frozen<=0){e.y=e.baseY+Math.sin(e.t*2.2)*48;e.x+=Math.sign(P.x-e.x)*42*dt;}
+    } else if(e.frozen<=0){
+      let sp=52;
+      if(def.stealth&&!P.hidden){
+        const dx=P.x-e.x;
+        if(Math.abs(dx)<190&&Math.sign(dx)===e.facing&&Math.abs(P.y-e.y)<60)e.alert=true;
+      }
+      if(e.alert&&!P.hidden){sp=140;e.vx=Math.sign(P.x-e.x)*sp;}
+      else if(e.alert&&P.hidden){e.alert=false;e.vx=Math.sign(e.vx||-1)*52;}
+      e.facing=e.vx<0?-1:1;
+      const ahead={x:e.x+(e.vx>0?e.w+2:-4),y:e.y+e.h+4,w:2,h:2};
+      const wallR={x:e.x+(e.vx>0?e.w+2:-4),y:e.y+8,w:2,h:2};
+      let gA=false,wA=false;
+      for(const s of level.solids){if(hit(ahead,s))gA=true;if(hit(wallR,s))wA=true;}
+      if((!gA||wA)&&!e.alert)e.vx*=-1;
+      e.x+=e.vx*dt;
+    }
+    /* stomp! */
+    if(!e.dead&&P.vy>140&&hit({x:P.x,y:P.y+P.h-6,w:P.w,h:10},{x:e.x,y:e.y,w:e.w,h:12})){
+      hurtEnemy(e,1,0);P.vy=-420;P.squash=-1;P.jcut=false;SFX.stomp();continue;
+    }
+    if(P.meleeT>0){
+      const mb={x:P.facing>0?P.x+P.w:P.x-30,y:P.y-2,w:30,h:P.h+4};
+      if(hit(mb,e))hurtEnemy(e,1,P.facing*180);
+    }
+    if(!e.dead&&hit(P,e)&&e.frozen<=0)damagePlayer();
+  }
+  /* boss */
+  if(L.boss&&!L.boss.dead)updateBoss(L.boss,dt);
+
+  /* projectiles */
+  for(const pr of L.projectiles){
+    pr.x+=pr.vx*dt;pr.y+=pr.vy*dt;pr.life-=dt;
+    if(pr.from==='player'){
+      for(const e of L.enemies)if(!e.dead&&hit(pr,e)){hurtEnemy(e,pr.dmg,pr.vx>0?160:-160);if(!pr.pierce)pr.life=0;}
+      if(L.boss&&!L.boss.dead&&hit(pr,L.boss)){
+        L.boss.hp-=pr.dmg;L.boss.hurt=.2;SFX.hit();shake(4,.15);hitPause(.05);
+        if(!pr.pierce)pr.life=0;
+        if(L.boss.hp<=0){L.boss.dead=true;SFX.poof();shake(12,.5);hitPause(.15);
+          burst(L.boss.x+26,L.boss.y+36,'#f2c14e',34);toast('RAAVAN FALLS!');G.score+=500;}
+      }
+    } else if(hit(pr,P)){damagePlayer();pr.life=0;}
+    for(const s of level.solids)if(hit(pr,s)&&!pr.pierce)pr.life=0;
+  }
+  L.projectiles=L.projectiles.filter(p=>p.life>0);
+
+  /* particles */
+  for(const pa of L.particles){pa.life-=dt;
+    if(pa.kind==='ring')pa.r+=pa.vr*dt;
+    else{pa.x+=pa.vx*dt;pa.y+=pa.vy*dt;pa.vy+=620*dt;}}
+  L.particles=L.particles.filter(p=>p.life>0);
+
+  /* combo timer */
+  if(G.comboT>0){G.comboT-=dt;if(G.comboT<=0)G.combo=0;}
+  G.shakeT-=dt;if(G.shakeT<=0)G.shakeMag=0;
+  if(G.toastT>0)G.toastT-=dt;
+
+  updateAmbient(def.theme,dt,L.camX);
+  L.camX=Math.max(0,Math.min(P.x-W/2+60,L.w-W));
+}
+function updateBoss(b,dt){
+  b.t+=dt;b.hurt-=dt;b.shootT-=dt;
+  b.phase=b.hp>9?1:b.hp>4?2:3;
+  const speed=55+b.phase*30;
+  b.x+=Math.sign(P.x-b.x)*speed*dt*(Math.sin(b.t*1.3)>0?1:.4);
+  b.x=Math.max(80,Math.min(b.x,level.w-140));
+  if(b.shootT<=0){
+    b.shootT=Math.max(1.1,2.6-b.phase*.4);
+    SFX.boss();
+    const cx=b.x+b.w/2,cy=b.y+22,n=b.phase;
+    for(let i=0;i<n;i++){
+      const ang=Math.atan2((P.y+10)-cy,(P.x+10)-cx)+(i-(n-1)/2)*.24;
+      level.projectiles.push({x:cx,y:cy,vx:Math.cos(ang)*270,vy:Math.sin(ang)*270,w:12,h:12,from:'boss',life:2.6,kind:'bolt'});
+    }
+  }
+  if(hit(P,b))damagePlayer();
+}
+
+/* ---------------- Render world ---------------- */
+function playerPose(){
+  if(P.pounding)return 'pound';
+  if(P.atkAnim>0)return 'attack';
+  if(!P.onGround&&!P.vine)return P.vy<0?'jump':'fall';
+  if(Math.abs(P.vx)>10)return 'run';
+  return 'idle';
+}
+function drawPlay(){
+  const L=level,th=THEMES[L.def.theme];
+  const shX=G.shakeMag?(Math.random()-.5)*G.shakeMag:0;
+  const shY=G.shakeMag?(Math.random()-.5)*G.shakeMag:0;
+  drawBG(L.def.theme,L.camX,G.t);
+  ctx.save();
+  ctx.translate(-Math.round(L.camX)+shX,H-L.h+shY);
+
+  /* static tiles */
+  for(const s of L.solids){
+    if(s.x+TILE<L.camX||s.x>L.camX+W)continue;
+    ctx.fillStyle=th.ground;ctx.fillRect(s.x,s.y,TILE,TILE);
+    ctx.fillStyle=th.grass;ctx.fillRect(s.x,s.y,TILE,6);
+    ctx.fillStyle='rgba(0,0,0,.15)';ctx.fillRect(s.x,s.y+TILE-4,TILE,4);
+    ctx.fillStyle='rgba(255,255,255,.06)';ctx.fillRect(s.x+2,s.y+10,4,4);ctx.fillRect(s.x+18,s.y+20,5,4);
+  }
+  /* movers */
+  for(const m of L.movers){
+    ctx.fillStyle='#caa06a';ctx.fillRect(m.x,m.y,m.w,m.h);
+    ctx.fillStyle='#f2c14e';ctx.fillRect(m.x,m.y,m.w,4);
+    ctx.fillStyle='rgba(0,0,0,.25)';ctx.fillRect(m.x,m.y+m.h-3,m.w,3);
+  }
+  /* sinking stones */
+  for(const s of L.sinks){
+    ctx.fillStyle='#8a8f96';ctx.fillRect(s.x,s.y,s.w,s.h);
+    ctx.fillStyle='#b8bec6';ctx.fillRect(s.x,s.y,s.w,4);
+  }
+  /* crumbles */
+  for(const c of L.crumbles){
+    if(c.state==='gone')continue;
+    const jx=c.state==='shaking'?(Math.random()-.5)*4:0;
+    ctx.fillStyle='#9a8a70';ctx.fillRect(c.x+jx,c.y,TILE,TILE);
+    ctx.fillStyle='#7a6a50';
+    ctx.fillRect(c.x+jx+4,c.y+6,10,3);ctx.fillRect(c.x+jx+18,c.y+16,9,3);ctx.fillRect(c.x+jx+7,c.y+23,12,3);
+  }
+  /* springs */
+  for(const sp of L.springs){
+    const sq=sp.anim>0?6:0;
+    ctx.fillStyle='#c0392b';ctx.fillRect(sp.x+4,sp.y-8+sq,24,10-sq);
+    ctx.fillStyle='#fff';ctx.fillRect(sp.x+8,sp.y-6+sq,5,4);ctx.fillRect(sp.x+18,sp.y-6+sq,5,4);
+    ctx.fillStyle='#8a5a2b';ctx.fillRect(sp.x+10,sp.y+2,12,10);
+  }
+  /* vines */
+  for(const v of L.vines){
+    const thta=.55*Math.sin(G.t*1.7+v.ph);
+    const bx=v.ax+Math.sin(thta)*v.len,by=v.ay+Math.cos(thta)*v.len;
+    ctx.strokeStyle='#3f7d3c';ctx.lineWidth=4;
+    ctx.beginPath();ctx.moveTo(v.ax,v.ay);
+    ctx.quadraticCurveTo(v.ax+Math.sin(thta)*v.len*.4,v.ay+v.len*.55,bx,by);ctx.stroke();
+    ctx.fillStyle='#5ea555';ctx.fillRect(bx-6,by-4,12,10);
+    ctx.fillStyle='#7a5a30';ctx.fillRect(v.ax-8,v.ay-6,16,6);
+  }
+  /* fire columns */
+  for(const f of L.fires){
+    const ph=(G.t+f.off)%2.9;
+    ctx.fillStyle='#5e3a1a';ctx.fillRect(f.x+4,f.y+8,24,20);
+    ctx.fillStyle='#f2c14e';ctx.fillRect(f.x+8,f.y+4,16,6);
+    if(ph>1.6&&ph<=2.0){ctx.fillStyle=`rgba(255,160,60,${.3+.4*Math.sin(G.t*20)})`;
+      ctx.fillRect(f.x+8,f.y-20,16,22);}
+    if(ph>2.0){
+      for(let i=0;i<4;i++){
+        const fh=92-i*8,fw=20-i*4;
+        ctx.fillStyle=['#ff5a1f','#ff8a2a','#ffc23e','#fff2a0'][i];
+        ctx.fillRect(f.x+16-fw/2+Math.sin(G.t*22+i)*2,f.y-fh,fw,fh);
+      }
+    }
+  }
+  /* hazards */
+  for(const hz of L.hazards){
+    if(hz.x+TILE<L.camX||hz.x>L.camX+W)continue;
+    ctx.fillStyle=th.ember?'#ff7a2a':'#c8ccd4';
+    for(let i=0;i<3;i++){ctx.beginPath();
+      ctx.moveTo(hz.x+i*9,hz.y+18);ctx.lineTo(hz.x+i*9+4,hz.y);ctx.lineTo(hz.x+i*9+8,hz.y+18);ctx.fill();}
+  }
+  /* water */
+  for(const w2 of L.water){
+    if(w2.x+TILE<L.camX||w2.x>L.camX+W)continue;
+    ctx.fillStyle='#2a7fb8';ctx.fillRect(w2.x,w2.y,TILE,TILE);
+    ctx.fillStyle='rgba(255,255,255,.5)';ctx.fillRect(w2.x+(G.t*40)%TILE,w2.y+3,8,3);
+  }
+  /* bushes */
+  for(const b of L.bushes){
+    ctx.fillStyle='#2f7a38';ctx.beginPath();ctx.arc(b.x+b.w/2,b.y+b.h-10,b.w/2,Math.PI,0);ctx.fill();
+    ctx.fillStyle='#3f9948';ctx.beginPath();ctx.arc(b.x+b.w/2-8,b.y+b.h-14,b.w/3,Math.PI,0);ctx.fill();
+  }
+  /* pickups */
+  for(const d of L.diyas){if(d.got)continue;
+    ctx.fillStyle='#8a5a2b';ctx.fillRect(d.x,d.y+10,16,6);
+    ctx.fillStyle='#ffdd55';ctx.fillRect(d.x+6,d.y+2+Math.sin(G.t*8+d.x)*1.5,4,8);
+    ctx.fillStyle='rgba(255,221,85,.25)';ctx.beginPath();ctx.arc(d.x+8,d.y+6,10+Math.sin(G.t*6+d.x)*2,0,7);ctx.fill();}
+  for(const h2 of L.hearts){if(h2.got)continue;
+    ctx.fillStyle='#e05555';
+    ctx.fillRect(h2.x,h2.y+4,8,8);ctx.fillRect(h2.x+10,h2.y+4,8,8);
+    ctx.fillRect(h2.x+2,h2.y+10,14,8);ctx.fillRect(h2.x+6,h2.y+16,6,4);}
+  if(L.checkpoint){const c=L.checkpoint;
+    ctx.fillStyle='#7a5a30';ctx.fillRect(c.x+14,c.y-40,4,72);
+    ctx.fillStyle=c.hit?'#f2c14e':'#888';ctx.fillRect(c.x+18,c.y-40,22,14);}
+  if(L.goal){const g2=L.goal;
+    ctx.fillStyle='#7a5a30';
+    ctx.fillRect(g2.x-6,g2.y,10,g2.h);ctx.fillRect(g2.x+g2.w-4,g2.y,10,g2.h);
+    ctx.fillRect(g2.x-10,g2.y-10,g2.w+20,12);
+    ctx.fillStyle='#f2c14e';ctx.fillRect(g2.x-10,g2.y-14,g2.w+20,5);
+    ctx.fillStyle='rgba(255,221,85,.15)';ctx.fillRect(g2.x-2,g2.y,g2.w+4,g2.h);}
+  if(L.deer)drawDeer(L.deer.x,L.deer.y,G.t);
+
+  /* enemies */
+  for(const e of L.enemies){
+    if(e.dead)continue;
+    if(e.kind==='flyer'){drawFlyer(e.x,e.y,2,Math.sin(e.t*10)>0,e.frozen>0);continue;}
+    const key=e.kind==='vanara'?'vanara':'rakshasa';
+    if(e.frozen>0)ctx.globalAlpha=.6;
+    drawChar(key,e.x-2,e.y-4,1.75,e.facing<0,Math.abs(e.vx)>5?'run':'idle',e.t);
+    if(e.frozen>0){ctx.globalAlpha=1;ctx.strokeStyle='#9fd7ff';ctx.lineWidth=2;
+      ctx.strokeRect(e.x-3,e.y-4,e.w+6,e.h+6);}
+    ctx.globalAlpha=1;
+  }
+  /* boss */
+  if(L.boss&&!L.boss.dead){const b=L.boss;
+    if(b.hurt>0)ctx.globalAlpha=.55;
+    drawChar('raavan',b.x-6,b.y-6,4,P.x<b.x,'idle',b.t);
+    ctx.globalAlpha=1;}
+  /* projectiles */
+  for(const pr of L.projectiles){
+    if(pr.kind==='arrow'){ctx.fillStyle='#e8e0c8';ctx.fillRect(pr.x,pr.y,14,3);
+      ctx.fillStyle='#c0392b';ctx.fillRect(pr.vx>0?pr.x+12:pr.x,pr.y-1,4,5);}
+    else if(pr.kind==='divine'){ctx.fillStyle='#fff';ctx.fillRect(pr.x,pr.y,22,5);
+      ctx.fillStyle='#f2c14e';ctx.fillRect(pr.x+2,pr.y-2,18,9);
+      ctx.fillStyle='rgba(255,221,85,.4)';ctx.fillRect(pr.x-8,pr.y-4,10,12);}
+    else if(pr.kind==='orb'){ctx.fillStyle='#ffd23e';ctx.beginPath();ctx.arc(pr.x+6,pr.y+3,7,0,7);ctx.fill();
+      ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(pr.x+6,pr.y+3,3,0,7);ctx.fill();}
+    else{ctx.fillStyle='#b06ae0';ctx.beginPath();ctx.arc(pr.x+6,pr.y+6,7,0,7);ctx.fill();
+      ctx.fillStyle='#e0c0ff';ctx.beginPath();ctx.arc(pr.x+6,pr.y+6,3,0,7);ctx.fill();}
+  }
+  /* particles */
+  for(const pa of L.particles){
+    if(pa.kind==='ring'){ctx.strokeStyle=`rgba(255,235,150,${Math.max(0,pa.life*2)})`;
+      ctx.lineWidth=3;ctx.beginPath();ctx.arc(pa.x,pa.y,pa.r,0,7);ctx.stroke();}
+    else{ctx.fillStyle=pa.color||'#fff';ctx.globalAlpha=Math.max(0,pa.life*2);
+      ctx.fillRect(pa.x,pa.y,4,4);ctx.globalAlpha=1;}
+  }
+  /* secret fog covers */
+  for(const s of L.secrets){
+    if(s.alpha<=0)continue;
+    ctx.globalAlpha=s.alpha;
+    for(const t of s.tiles){
+      ctx.fillStyle=th.near;ctx.fillRect(t.x,t.y,TILE,TILE);
+      ctx.fillStyle=th.grass;ctx.fillRect(t.x+6,t.y+6,6,6);ctx.fillRect(t.x+18,t.y+18,7,6);
+    }
+    ctx.globalAlpha=1;
+  }
+
+  /* player */
+  if(!P.dead||Math.sin(G.t*30)>0){
+    if(!(P.inv>0&&Math.sin(G.t*25)>0)){
+      if(P.hidden)ctx.globalAlpha=.45;
+      drawChar(G.playChar,P.x-3,P.y-8,2,P.facing<0,playerPose(),P.walk||G.t,{squash:P.squash});
+      ctx.globalAlpha=1;
+      if(P.meleeT>0){ctx.fillStyle='rgba(255,255,255,.7)';
+        const mx=P.facing>0?P.x+P.w:P.x-28;
+        ctx.fillRect(mx,P.y+4,28,5);ctx.fillRect(mx+6,P.y+13,20,4);}
+    }
+  }
+  ctx.restore();
+
+  /* ---- HUD ---- */
+  ctx.fillStyle='rgba(0,0,0,.45)';ctx.fillRect(0,0,W,46);
+  for(let i=0;i<5;i++){
+    ctx.fillStyle=i<P.hearts?'#e05555':'rgba(255,255,255,.18)';
+    ctx.fillRect(14+i*24,14,8,8);ctx.fillRect(24+i*24,14,8,8);
+    ctx.fillRect(16+i*24,20,14,8);ctx.fillRect(20+i*24,27,6,4);
+  }
+  ctx.fillStyle='#ffdd55';ctx.fillRect(150,16,6,12);
+  ctx.fillStyle='#fff';ctx.font='bold 15px monospace';ctx.textAlign='left';
+  const dLeft=level.diyas.filter(d=>d.got).length;
+  ctx.fillText(dLeft+'/'+level.diyaTotal,164,30);
+  ctx.fillStyle='rgba(255,255,255,.25)';ctx.fillRect(238,18,80,10);
+  const cdMax=G.playChar==='sita'?6:G.playChar==='raavan'?5:G.playChar==='hanuman'?1.4:3;
+  ctx.fillStyle='#8fd07a';ctx.fillRect(238,18,80*Math.max(0,1-Math.max(0,P.spCd)/cdMax),10);
+  ctx.fillStyle='#fff';ctx.font='9px monospace';ctx.fillText('S·SPECIAL',238,14);
+  ctx.textAlign='center';ctx.font='bold 13px monospace';
+  ctx.fillText(level.def.title,W/2,20);
+  ctx.font='11px monospace';ctx.fillStyle='rgba(255,255,255,.7)';
+  ctx.fillText(THEMES[level.def.theme].label,W/2,36);
+  ctx.textAlign='right';ctx.font='bold 14px monospace';ctx.fillStyle='#fff';
+  ctx.fillText('SCORE '+G.score+(muted?'  🔇':''),W-14,20);
+  if(G.daily){
+    ctx.fillStyle='#f2c14e';ctx.textAlign='center';ctx.font='bold 12px monospace';
+    ctx.fillText('☀ '+G.daily.mod.name+(G.daily.mod.id==='rush'?('  ·  '+Math.ceil(G.rushT)+'s'):''),W/2,20);
+  }
+  ctx.fillStyle=CHARS[G.playChar].color;ctx.font='bold 12px monospace';
+  ctx.fillText(CHARS[G.playChar].name,W-14,36);
+  if(G.combo>=2){
+    ctx.fillStyle='#f2c14e';ctx.textAlign='center';
+    ctx.font='bold '+(18+Math.min(G.combo,8))+'px monospace';
+    ctx.fillText('COMBO ×'+G.combo,W/2,74);
+  }
+  if(G.toastT>0){
+    ctx.globalAlpha=Math.min(1,G.toastT*2);
+    ctx.fillStyle='rgba(0,0,0,.55)';ctx.fillRect(W/2-170,88,340,30);
+    ctx.fillStyle='#f2c14e';ctx.textAlign='center';ctx.font='bold 15px monospace';
+    ctx.fillText(G.toast,W/2,108);ctx.globalAlpha=1;
+  }
+  if(level.def.boss&&level.boss){
+    ctx.fillStyle='rgba(0,0,0,.45)';ctx.fillRect(W/2-160,52,320,20);
+    ctx.fillStyle='#8a5ac2';
+    ctx.fillRect(W/2-156,56,312*Math.max(0,level.boss.hp/level.boss.maxhp),12);
+    ctx.fillStyle='#fff';ctx.textAlign='center';ctx.font='bold 11px monospace';
+    ctx.fillText('RAAVAN',W/2,66);
+  }
+  if(level.def.stealth){
+    ctx.fillStyle=P.hidden?'#8fd07a':'#ffd23e';
+    ctx.textAlign='center';ctx.font='bold 12px monospace';
+    ctx.fillText(P.hidden?'HIDDEN':'Hold ▼ in a bush to hide · S to freeze demons',W/2,H-14);
+  }
+  /* chapter clear panel */
+  if(P.winT>0){
+    ctx.fillStyle='rgba(0,0,0,.6)';ctx.fillRect(W/2-220,H/2-70,440,140);
+    ctx.strokeStyle='#f2c14e';ctx.lineWidth=3;ctx.strokeRect(W/2-220,H/2-70,440,140);
+    ctx.fillStyle='#f2c14e';ctx.textAlign='center';ctx.font='bold 26px monospace';
+    ctx.fillText('CHAPTER CLEAR!',W/2,H/2-24);
+    const medalName=['','BRONZE','SILVER','GOLD'][level.medal]||'';
+    const medalCol=['','#b9722d','#cfd6e4','#f2c14e'][level.medal]||'#fff';
+    ctx.fillStyle=medalCol;ctx.font='bold 18px monospace';
+    ctx.fillText('★ '+medalName+' MEDAL ★',W/2,H/2+6);
+    ctx.fillStyle='#fff';ctx.font='bold 13px monospace';
+    ctx.fillText('Diyas '+dLeft+'/'+level.diyaTotal+'   ·   Damage '+level.dmg+'   ·   Score '+G.score,W/2,H/2+30);
+    ctx.fillStyle='#8fd07a';ctx.font='12px monospace';
+    ctx.fillText('+2 hearts for the road  ('+Math.min(5,P.hearts+2)+'/5)',W/2,H/2+52);
+  }
+}
+
+
+/* ---------------- Quiz screen (in-path) ---------------- */
+function drawQuizCore(bank,state,titleTxt,accent,onDone,ptsPer){
+  drawBG('vatika',G.t*8,G.t);
+  ctx.fillStyle='rgba(6,3,14,.72)';ctx.fillRect(0,0,W,H);
+  const q=bank[state.idx];
+  textBlock([titleTxt],56,20,accent);
+  textBlock(['Question '+(state.idx+1)+' / '+bank.length],86,12,'rgba(255,255,255,.6)');
+  /* question (wrapped) */
+  ctx.fillStyle='#fff';ctx.font='bold 17px monospace';ctx.textAlign='center';
+  const words=q.q.split(' ');let line='',yy=136;const maxw=W-260;
+  for(const w2 of words){ if(ctx.measureText(line+w2).width>maxw){ctx.fillText(line,W/2,yy);yy+=24;line='';} line+=w2+' '; }
+  ctx.fillText(line,W/2,yy);
+  /* options */
+  const oy=yy+40, oh=46, ow=560, ox=W/2-ow/2;
+  q.o.forEach((opt,i)=>{
+    const y=oy+i*(oh+12), sel=state.sel===i;
+    let bg='rgba(255,255,255,.08)', bd='rgba(255,255,255,.3)';
+    if(state.fb>=0){ if(i===q.a){bg='rgba(80,180,90,.35)';bd='#8fd07a';}
+      else if(i===state.fb&&state.fb!==q.a){bg='rgba(200,60,60,.35)';bd='#e05555';} }
+    else if(sel){bg='rgba(242,193,78,.2)';bd='#f2c14e';}
+    ctx.fillStyle=bg;ctx.fillRect(ox,y,ow,oh);
+    ctx.strokeStyle=bd;ctx.lineWidth=sel&&state.fb<0?3:2;ctx.strokeRect(ox,y,ow,oh);
+    ctx.fillStyle='#fff';ctx.font='bold 13px monospace';ctx.textAlign='left';
+    ctx.fillText(String.fromCharCode(65+i)+' ·  '+opt, ox+18, y+28);
+    if(pointer.tapped&&pointer.x>ox&&pointer.x<ox+ow&&pointer.y>y&&pointer.y<y+oh){
+      if(state.fb<0){state.sel=i;answer();}
+      else next();
+    }
+  });
+  /* feedback */
+  if(state.fb>=0){
+    const ok=state.fb===q.a;
+    ctx.textAlign='center';
+    ctx.fillStyle=ok?'#8fd07a':'#e05555';ctx.font='bold 15px monospace';
+    ctx.fillText(ok?'✦ CORRECT!  +'+ptsPer:'Not quite —',W/2,oy+3*(oh+12)+20);
+    ctx.fillStyle='#ddd';ctx.font='12px monospace';
+    ctx.fillText(q.e,W/2,oy+3*(oh+12)+42);
+    textBlock(['A · '+(state.idx<bank.length-1?'next question':'continue')],H-36,13,'#f2c14e');
+  } else {
+    textBlock(['▲▼ choose · A answer'],H-36,13,'#f2c14e');
+  }
+  function answer(){
+    state.fb=state.sel;
+    if(state.sel===q.a){state.correct++;SFX.collect();onCorrect();}
+    else SFX.hit();
+  }
+  function onCorrect(){ if(ptsPer===50){G.score+=50;} else {SAVE.gurukul.score+=100;saveGame();} }
+  function next(){
+    if(state.idx<bank.length-1){state.idx++;state.sel=0;state.fb=-1;}
+    else onDone(state);
+  }
+  if(state.fb<0){
+    if(pressed('ArrowUp')){state.sel=(state.sel+q.o.length-1)%q.o.length;SFX.collect();}
+    if(pressed('ArrowDown')){state.sel=(state.sel+1)%q.o.length;SFX.collect();}
+    if(pressed('KeyA')||pressed('Enter'))answer();
+  } else {
+    if(pressed('KeyA')||pressed('Enter'))next();
+  }
+}
+function drawQuiz(){
+  drawQuizCore(G.quiz.bank,G.quiz,'✦ WISDOM OF THE PATH ✦','#f2c14e',
+    st=>{ toast&&0; SFX.win(); nextStep(); },50);
+}
+/* ---------------- Gurukul mode ---------------- */
+function drawGurukul(){
+  const g=G.guru;
+  drawBG('panchavati',G.t*6,G.t);
+  ctx.fillStyle='rgba(6,3,14,.7)';ctx.fillRect(0,0,W,H);
+  if(g.phase==='menu'){
+    textBlock(['GURUKUL'],70,40,'#f2c14e');
+    textBlock(['Learn the Ramayana · kanda by kanda'],104,13,'#fff');
+    textBlock(['Wisdom score  '+SAVE.gurukul.score],126,12,'#8fd07a');
+    KANDAS.forEach((k,i)=>{
+      const y=152+i*44, sel=g.kanda===i, done=!!SAVE.gurukul.done[i];
+      ctx.fillStyle=sel?'rgba(242,193,78,.18)':'rgba(255,255,255,.06)';
+      ctx.fillRect(W/2-260,y,520,38);
+      ctx.strokeStyle=sel?'#f2c14e':'rgba(255,255,255,.25)';ctx.lineWidth=sel?3:1.5;
+      ctx.strokeRect(W/2-260,y,520,38);
+      ctx.textAlign='left';ctx.font='bold 14px monospace';
+      ctx.fillStyle=done?'#8fd07a':'#fff';
+      ctx.fillText((done?'✔ ':'· ')+(i+1)+'. '+k.name+' — '+k.sub, W/2-240, y+24);
+      if(pointer.tapped&&pointer.x>W/2-260&&pointer.x<W/2+260&&pointer.y>y&&pointer.y<y+38){
+        if(g.kanda===i){g.phase='read';g.page=0;SFX.win();}
+        else{g.kanda=i;SFX.collect();}
+      }
+    });
+    textBlock(['▲▼ choose · A read · S back to title'],H-24,12,'#f2c14e');
+    if(pressed('ArrowUp')){g.kanda=(g.kanda+KANDAS.length-1)%KANDAS.length;SFX.collect();}
+    if(pressed('ArrowDown')){g.kanda=(g.kanda+1)%KANDAS.length;SFX.collect();}
+    if(pressed('KeyA')||pressed('Enter')){g.phase='read';g.page=0;SFX.win();}
+    if(pressed('KeyS')){G.mode='title';SFX.collect();}
+  }
+  else if(g.phase==='read'){
+    const k=KANDAS[g.kanda];
+    textBlock([k.name.toUpperCase()],70,26,'#f2c14e');
+    textBlock([k.sub+'  ·  page '+(g.page+1)+'/'+k.pages.length],98,12,'rgba(255,255,255,.6)');
+    ctx.fillStyle='rgba(0,0,0,.45)';ctx.fillRect(150,130,W-300,250);
+    ctx.strokeStyle='#f2c14e';ctx.lineWidth=2;ctx.strokeRect(150,130,W-300,250);
+    ctx.textAlign='left';ctx.fillStyle='#fff';ctx.font='16px monospace';
+    const words=k.pages[g.page].split(' ');let line='',yy=178,xx=178;const maxw=W-360;
+    for(const w2 of words){ if(ctx.measureText(line+w2).width>maxw){ctx.fillText(line,xx,yy);yy+=26;line='';} line+=w2+' '; }
+    ctx.fillText(line,xx,yy);
+    const last=g.page===k.pages.length-1;
+    textBlock([last?'A · take the kanda quiz':'A · next page','S · back'],H-46,13,'#f2c14e',18);
+    if(pressed('KeyA')||pressed('Enter')||pointer.tapped){
+      SFX.collect();
+      if(!last)g.page++;
+      else{g.phase='quiz';g.qIdx=0;g.sel=0;g.fb=-1;g.correct=0;
+        G._gq={bank:k.quiz,idx:0,sel:0,fb:-1,correct:0};}
+    }
+    if(pressed('KeyS')){g.phase='menu';SFX.collect();}
+  }
+  else if(g.phase==='quiz'){
+    drawQuizCore(G._gq.bank,G._gq,'✦ '+KANDAS[g.kanda].name.toUpperCase()+' — WISDOM ✦','#8fd07a',
+      st=>{ SAVE.gurukul.done[g.kanda]=true; saveGame(); SFX.win();
+        g.phase='done'; g.lastCorrect=st.correct; },100);
+  }
+  else if(g.phase==='done'){
+    const k=KANDAS[g.kanda];
+    textBlock([k.name+' — COMPLETE'],170,28,'#f2c14e');
+    textBlock([G._gq.correct+' / '+k.quiz.length+' wise answers   ·   +'+(G._gq.correct*100)+' wisdom'],226,15,'#fff');
+    textBlock(['Total wisdom score: '+SAVE.gurukul.score],256,13,'#8fd07a');
+    const allDone=KANDAS.every((_,i)=>SAVE.gurukul.done[i]);
+    if(allDone)textBlock(['★ ALL SEVEN KANDAS COMPLETE — A TRUE SCHOLAR OF THE EPIC ★'],300,14,'#f2c14e');
+    textBlock(['A · back to Gurukul'],H-40,13,'#f2c14e');
+    if(pressed('KeyA')||pressed('Enter')||pointer.tapped){g.phase='menu';SFX.collect();}
+  }
+}
+
+/* ---------------- Screens ---------------- */
+function textBlock(lines,y,size,color,lh){
+  ctx.fillStyle=color;ctx.textAlign='center';ctx.font='bold '+size+'px monospace';
+  lines.forEach((l,i)=>ctx.fillText(l,W/2,y+i*(lh||size*1.6)));
+}
+
+/* ================= STEP 4: pilgrim codes · leaderboard · daily trial ================= */
+const B32='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const NAMECH='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -.';
+const MEDAL_ORDER=['ram1','ram2','sita1','sita2','han1','han2','rav1','rav2','finale_ram','finale_hanuman','finale_sita','finale_raavan'];
+function BitW(){const a=[];let cur=0,n=0;return{push(v,bits){for(let i=bits-1;i>=0;i--){cur=(cur<<1)|((v>>i)&1);n++;if(n===8){a.push(cur);cur=0;n=0;}}},done(){if(n>0){a.push(cur<<(8-n));}return a;}};}
+function BitR(bytes){let bi=0,bit=0;return{read(bits){let v=0;for(let i=0;i<bits;i++){const byte=bytes[bi]||0;v=(v<<1)|((byte>>(7-bit))&1);bit++;if(bit===8){bit=0;bi++;}}return v;}};}
+function packSave(){
+  const w=BitW();
+  const nm=(SAVE.name||'').toUpperCase().padEnd(8,' ').slice(0,8);
+  for(const ch of nm){let ix=NAMECH.indexOf(ch);if(ix<0)ix=NAMECH.indexOf(' ');w.push(ix,6);}
+  let uc=0;for(const h of HERO_ORDER)if(SAVE.unlocked[h])uc++;
+  w.push(uc-1,2);
+  for(const mk of MEDAL_ORDER)w.push(Math.min(3,SAVE.medals[mk]||0),2);
+  w.push(Math.min(16383,SAVE.diyaBank|0),14);
+  w.push(Math.min(16383,(SAVE.gurukul&&SAVE.gurukul.score|0)||0),14);
+  let gd=0;for(let i=0;i<7;i++)if(SAVE.gurukul&&SAVE.gurukul.done&&SAVE.gurukul.done[i])gd|=(1<<i);
+  w.push(gd,7);
+  for(const h of HERO_ORDER)w.push(Math.min(16383,Math.floor((SAVE.best[h]||0)/10)),14);
+  const bytes=w.done();
+  let ck=0;for(const b of bytes)ck=(ck+b)&255;
+  bytes.push(ck);
+  let bits='';for(const b of bytes)bits+=b.toString(2).padStart(8,'0');
+  let out='';for(let i=0;i<bits.length;i+=5){out+=B32[parseInt(bits.slice(i,i+5).padEnd(5,'0'),2)];}
+  return out.match(/.{1,5}/g).join('-');
+}
+function unpackSave(code){
+  const clean=code.toUpperCase().replace(/[^A-Z2-9]/g,'');
+  if(clean.length<10)return null;
+  let bits='';for(const ch of clean){const ix=B32.indexOf(ch);if(ix<0)return null;bits+=ix.toString(2).padStart(5,'0');}
+  const bytes=[];for(let i=0;i+8<=bits.length;i+=8)bytes.push(parseInt(bits.slice(i,i+8),2));
+  const ck=bytes.pop();let sum=0;for(const b of bytes)sum=(sum+b)&255;
+  if(sum!==ck)return null;
+  const r=BitR(bytes),o={};
+  let nm='';for(let i=0;i<8;i++)nm+=NAMECH[r.read(6)]||' ';
+  o.name=nm.trim();
+  const uc=r.read(2)+1;o.unlocked={};HERO_ORDER.forEach((h,i)=>{if(i<uc)o.unlocked[h]=true;});
+  o.medals={};for(const mk of MEDAL_ORDER){const m=r.read(2);if(m)o.medals[mk]=m;}
+  o.diyaBank=r.read(14);
+  o.gscore=r.read(14);
+  const gd=r.read(7);o.gdone=[];for(let i=0;i<7;i++)o.gdone[i]=!!(gd&(1<<i));
+  o.best={};for(const h of HERO_ORDER){const v=r.read(14)*10;if(v)o.best[h]=v;}
+  return o;
+}
+function applyCode(o){
+  SAVE.name=o.name||SAVE.name;
+  SAVE.unlocked=o.unlocked; SAVE.medals=o.medals; SAVE.diyaBank=o.diyaBank;
+  SAVE.gurukul=SAVE.gurukul||{score:0,done:[]};
+  SAVE.gurukul.score=o.gscore; SAVE.gurukul.done=o.gdone;
+  SAVE.best=o.best; SAVE.completed={};
+  HERO_ORDER.forEach((h,i)=>{ if(o.unlocked[HERO_ORDER[i+1]]) SAVE.completed[h]=true; });
+  saveGame();
+}
+function dailySeed(){const d=new Date();return d.getFullYear()*10000+(d.getMonth()+1)*100+d.getDate();}
+function rng(seed){let a=seed>>>0;return()=>{a|=0;a=(a+0x6D2B79F5)|0;let t=Math.imul(a^(a>>>15),1|a);t=(t+Math.imul(t^(t>>>7),61|t))^t;return((t^(t>>>14))>>>0)/4294967296;};}
+const DAILY_LEVELS=['ram1','ram2','sita1','sita2','han1','han2','rav1','rav2'];
+const DAILY_MODS=[
+ {id:'grav',name:'FEATHER OF GARUDA',desc:'Low gravity — float like the wind'},
+ {id:'one', name:'THREAD OF FATE',   desc:'One heart. No mistakes.'},
+ {id:'rush',name:'TEMPLE RUSH',      desc:'Reach the goal in 90 seconds'}];
+function todaysDaily(){
+  const r=rng(dailySeed());
+  const lv=DAILY_LEVELS[Math.floor(r()*DAILY_LEVELS.length)];
+  const mod=DAILY_MODS[Math.floor(r()*DAILY_MODS.length)];
+  return {lv,mod};
+}
+function startDaily(){
+  const d=todaysDaily();
+  G.daily={mod:d.mod,lv:d.lv};
+  const hero=d.lv.startsWith('ram')?'ram':d.lv.startsWith('sita')?'sita':d.lv.startsWith('han')?'hanuman':'raavan';
+  G.startChar=hero;G.playChar=hero;G.script=null;G.step=0;
+  G.score=0;G.diyas=0;G.combo=0;G.unlockToast=null;
+  G.runHearts=d.mod.id==='one'?1:5;
+  G.gravMul=d.mod.id==='grav'?0.52:1;
+  G.rushT=d.mod.id==='rush'?90:0;
+  loadLevel(d.lv);G.mode='play';
+  G.entry={score:0,diyas:0,hearts:G.runHearts};
+  Music.play(heroTrack(G.playChar,LEVELS[d.lv]));
+}
+function finishDaily(){
+  if(G.daily.mod.id==='rush')G.score+=Math.max(0,Math.ceil(G.rushT))*5;
+  const key=''+dailySeed();
+  if((SAVE.daily[key]||0)<G.score)SAVE.daily[key]=G.score;
+  lbAdd('DAILY',G.score);saveGame();
+  G.mode='dailyend';Music.play('night');
+}
+function lbAdd(mode,score){
+  if(!SAVE.name||score<=0)return;
+  SAVE.lb.push({n:SAVE.name,s:score,m:mode,h:G.startChar,d:dailySeed()});
+  SAVE.lb.sort((a,b)=>b.s-a.s);SAVE.lb=SAVE.lb.slice(0,25);
+}
+/* ---- generic on-screen keyboard ---- */
+const KB={rows:['ABCDEFGHIJ','KLMNOPQRST','UVWXYZ0123','456789-. ⌫✓'],cx:0,cy:0};
+function drawKeyboard(buf,maxLen,title,onDone){
+  textBlock([title],86,24,'#f2c14e');
+  ctx.fillStyle='rgba(255,255,255,.1)';ctx.fillRect(W/2-260,116,520,52);
+  ctx.strokeStyle='#f2c14e';ctx.lineWidth=2;ctx.strokeRect(W/2-260,116,520,52);
+  ctx.fillStyle='#fff';ctx.font='bold 24px monospace';ctx.textAlign='center';
+  const disp=buf.length?buf:'_';
+  ctx.fillText(disp+(Math.sin(G.t*5)>0?'▏':' '),W/2,150);
+  const cw=48,ch=46,x0=W/2-(10*cw)/2,y0=196;
+  KB.rows.forEach((row,r)=>{
+    [...row].forEach((chr,c)=>{
+      const x=x0+c*cw,y=y0+r*ch;
+      const sel=KB.cx===c&&KB.cy===r;
+      ctx.fillStyle=sel?'rgba(242,193,78,.4)':'rgba(255,255,255,.08)';
+      ctx.fillRect(x+3,y+3,cw-6,ch-6);
+      if(sel){ctx.strokeStyle='#f2c14e';ctx.lineWidth=2;ctx.strokeRect(x+3,y+3,cw-6,ch-6);}
+      ctx.fillStyle=chr==='✓'?'#8fd07a':chr==='⌫'?'#e05555':'#fff';
+      ctx.font='bold 20px monospace';ctx.fillText(chr,x+cw/2,y+ch/2+7);
+      if(pointer.tapped&&pointer.x>x&&pointer.x<x+cw&&pointer.y>y&&pointer.y<y+ch){
+        KB.cx=c;KB.cy=r;buf=activateKey(chr,buf,maxLen,onDone);pointer.tapped=false;
+      }
+    });
+  });
+  textBlock(['◀▶▲▼ move · A select · S done'],y0+4*ch+30,13,'rgba(255,255,255,.7)');
+  if(pressed('ArrowLeft')){KB.cx=(KB.cx+9)%10;SFX.collect();}
+  if(pressed('ArrowRight')){KB.cx=(KB.cx+1)%10;SFX.collect();}
+  if(pressed('ArrowUp')){KB.cy=(KB.cy+3)%4;SFX.collect();}
+  if(pressed('ArrowDown')){KB.cy=(KB.cy+1)%4;SFX.collect();}
+  if(pressed('KeyA')||pressed('Enter')){
+    const chr=KB.rows[KB.cy][KB.cx]||' ';
+    buf=activateKey(chr,buf,maxLen,onDone);
+  }
+  if(pressed('KeyS'))onDone(buf);
+  return buf;
+}
+function activateKey(chr,buf,maxLen,onDone){
+  if(chr==='⌫'){SFX.hit();return buf.slice(0,-1);}
+  if(chr==='✓'){onDone(buf);return buf;}
+  if(buf.length>=maxLen){SFX.hit();return buf;}
+  SFX.collect();return buf+(chr===' '?' ':chr);
+}
+function drawName(){
+  drawBG('vatika',G.t*8,G.t);
+  ctx.fillStyle='rgba(0,0,0,.55)';ctx.fillRect(0,0,W,H);
+  G.kbuf=drawKeyboard(G.kbuf,8,'NAME THY PILGRIM',(buf)=>{
+    const nm=buf.trim();
+    if(!nm){SFX.hit();toast('Enter a name first');return;}
+    SAVE.name=nm.toUpperCase();saveGame();SFX.win();
+    const nxt=G.next||'title';G.next=null;G.kbuf='';
+    if(nxt==='daily'){startDaily();return;}
+    G.mode=nxt==='select'?'select':nxt==='board'?'board':'title';
+  });
+}
+function drawCodeIn(){
+  drawBG('night'in THEMES?'night':'vatika',G.t*8,G.t);
+  ctx.fillStyle='rgba(0,0,0,.55)';ctx.fillRect(0,0,W,H);
+  G.kbuf=drawKeyboard(G.kbuf,42,'ENTER PILGRIM CODE',(buf)=>{
+    const o=unpackSave(buf);
+    if(!o){toast('Code not recognized');SFX.hit();return;}
+    applyCode(o);SFX.win();toast('Welcome back, '+SAVE.name+'!');
+    G.kbuf='';G.mode='title';
+  });
+  textBlock(['dashes optional · letters I,O and digits 0,1 never appear'],468,11,'rgba(255,255,255,.55)');
+}
+function drawCodeShow(){
+  drawBG('lankagold'in THEMES?'lankagold':'vatika',G.t*6,G.t);
+  ctx.fillStyle='rgba(0,0,0,.6)';ctx.fillRect(0,0,W,H);
+  textBlock(['YOUR PILGRIM CODE'],120,26,'#f2c14e');
+  textBlock(['Write it down — enter it on any device to continue your journey.'],156,12,'#fff');
+  const code=packSave();
+  const lines=code.match(/.{1,23}/g)||[code];
+  ctx.fillStyle='rgba(255,255,255,.08)';ctx.fillRect(W/2-250,190,500,40+lines.length*34);
+  ctx.strokeStyle='#f2c14e';ctx.lineWidth=2;ctx.strokeRect(W/2-250,190,500,40+lines.length*34);
+  ctx.fillStyle='#8fd07a';ctx.font='bold 22px monospace';ctx.textAlign='center';
+  lines.forEach((l,i)=>ctx.fillText(l,W/2,226+i*34));
+  textBlock(['A · copy to clipboard        S · back'],400,15,'#f2c14e');
+  if(pressed('KeyA')||pointer.tapped){
+    try{navigator.clipboard.writeText(code).then(()=>toast('Copied!')).catch(()=>toast('Write it down!'));}
+    catch(e){toast('Write it down!');}
+    SFX.collect();
+  }
+  if(pressed('KeyS')||pressed('Escape')){G.mode='board';}
+}
+function drawBoard(){
+  drawBG('battlefield',G.t*10,G.t);
+  ctx.fillStyle='rgba(0,0,0,.62)';ctx.fillRect(0,0,W,H);
+  textBlock(['HALL OF FAME'],76,30,'#f2c14e');
+  const tabs=['ALL','STORY','DAILY'];G.boardTab=G.boardTab||0;
+  tabs.forEach((t,i)=>{
+    const x=W/2-140+i*100;
+    ctx.fillStyle=i===G.boardTab?'#f2c14e':'rgba(255,255,255,.5)';
+    ctx.font='bold 15px monospace';ctx.textAlign='center';
+    ctx.fillText(t,x,116);
+    if(i===G.boardTab){ctx.fillRect(x-32,124,64,2);}
+    if(pointer.tapped&&Math.abs(pointer.x-x)<45&&pointer.y>96&&pointer.y<130){G.boardTab=i;SFX.collect();pointer.tapped=false;}
+  });
+  const rows=SAVE.lb.filter(e=>G.boardTab===0||e.m===tabs[G.boardTab]).slice(0,10);
+  if(!rows.length){textBlock(['No legends yet. Forge the first!'],240,15,'#fff');}
+  rows.forEach((e,i)=>{
+    const y=158+i*30, me=e.n===SAVE.name;
+    ctx.fillStyle=me?'rgba(242,193,78,.16)':'rgba(255,255,255,.05)';
+    ctx.fillRect(W/2-280,y-18,560,26);
+    ctx.textAlign='left';ctx.font='bold 14px monospace';
+    ctx.fillStyle=i===0?'#f2c14e':i===1?'#cfd6e4':i===2?'#b9722d':'#fff';
+    ctx.fillText((i+1)+'.',W/2-266,y);
+    ctx.fillStyle=me?'#f2c14e':'#fff';ctx.fillText(e.n,W/2-226,y);
+    ctx.fillStyle='#8fd07a';ctx.fillText(e.m==='DAILY'?'☀ DAILY':'⚔ STORY',W/2-60,y);
+    ctx.fillStyle='#fff';ctx.textAlign='right';ctx.fillText(e.s+'',W/2+270,y);
+  });
+  textBlock(['A · my code     S · enter a code     ▼ / Esc · back'],486,14,'#f2c14e');
+  if(pressed('ArrowLeft')){G.boardTab=(G.boardTab+2)%3;SFX.collect();}
+  if(pressed('ArrowRight')){G.boardTab=(G.boardTab+1)%3;SFX.collect();}
+  if(pressed('KeyA')){if(!SAVE.name){G.next='board';G.kbuf='';G.mode='name';}else G.mode='codeshow';SFX.collect();}
+  if(pressed('KeyS')){G.kbuf='';G.mode='codein';SFX.collect();}
+  if(pressed('ArrowDown')||pressed('Escape')){G.mode='title';SFX.collect();}
+}
+function drawDailyEnd(){
+  drawBG('vatika',G.t*8,G.t);
+  ctx.fillStyle='rgba(0,0,0,.6)';ctx.fillRect(0,0,W,H);
+  const d=G.daily,key=''+dailySeed();
+  textBlock(['☀ DAILY TRIAL COMPLETE ☀'],150,30,'#f2c14e');
+  textBlock([d.mod.name+' — '+LEVELS[d.lv].title],196,14,'#fff');
+  textBlock(['Score  '+G.score],260,30,'#8fd07a');
+  textBlock(["Today's best  "+(SAVE.daily[key]||G.score)],300,15,'#fff');
+  textBlock(['A new trial dawns tomorrow.'],352,12,'rgba(255,255,255,.7)');
+  textBlock(['A · retry trial      S · hall of fame      ▼ · title'],420,15,'#f2c14e');
+  if(pressed('KeyA')||pointer.tapped){startDaily();SFX.win();}
+  if(pressed('KeyS')){G.daily=null;G.boardTab=2;G.mode='board';SFX.collect();}
+  if(pressed('ArrowDown')||pressed('Escape')){G.daily=null;G.mode='title';Music.play('night');}
+}
+
+function drawTitle(){
+  drawBG('battlefield',G.t*20,G.t);
+  updateAmbient('battlefield',1/60,G.t*20);
+  ctx.fillStyle='rgba(0,0,0,.35)';ctx.fillRect(0,0,W,H);
+  textBlock(['RAMAYANA'],185,64,'#f2c14e');
+  ctx.strokeStyle='#f2c14e';ctx.lineWidth=2;
+  ctx.strokeRect(W/2-230,150,460,60);
+  textBlock(['· PATHS TO LANKA ·'],232,20,'#fff');
+  const ks=['ram','sita','hanuman','raavan'];
+  ks.forEach((k,i)=>drawChar(k,W/2-150+i*80,290,3,i===3,'idle',G.t+i));
+  ctx.fillStyle='#f2c14e';ctx.font='bold 13px monospace';ctx.textAlign='center';
+  ctx.fillText(SAVE.name?('PILGRIM · '+SAVE.name):'A NEW PILGRIM APPROACHES',W/2,262);
+  if(Math.sin(G.t*4)>-.4)textBlock(['A · PLAY    S · GURUKUL    D · DAILY TRIAL    ▼ · HALL OF FAME'],435,16,'#fff');
+  textBlock(['Wisdom '+SAVE.gurukul.score+'  ·  Kandas '+KANDAS.filter((_,i)=>SAVE.gurukul.done[i]).length+'/7'],458,11,'#8fd07a');
+  textBlock(['◀▶ move · ▲ jump (hold!) · A attack · S special · D dash · P pause · F fullscreen · M mute'],484,12,'rgba(255,255,255,.75)');
+  if(!Music.name)Music.play('night');
+  if(pressed('KeyS')){G.mode='gurukul';G.guru.phase='menu';SFX.win();return;}
+  if(pressed('KeyD')){if(!SAVE.name){G.next='daily';G.kbuf='';G.mode='name';}else startDaily();SFX.win();return;}
+  if(pressed('ArrowDown')){G.boardTab=0;G.mode='board';SFX.collect();return;}
+  if(anyAction()){if(!SAVE.name){G.next='select';G.kbuf='';G.mode='name';}else G.mode='select';SFX.collect();}
+}
+function drawSelect(){
+  drawBG('vatika',G.t*10,G.t);
+  ctx.fillStyle='rgba(0,0,0,.4)';ctx.fillRect(0,0,W,H);
+  textBlock(['CHOOSE YOUR PATH'],66,30,'#f2c14e');
+  const list=['ram','sita','hanuman','raavan'];
+  const bw=204,gap=22,x0=(W-(bw*4+gap*3))/2;
+  list.forEach((k,i)=>{
+    const x=x0+i*(bw+gap),y=104,sel=i===G.selIndex;
+    ctx.fillStyle=sel?'rgba(242,193,78,.18)':'rgba(255,255,255,.07)';
+    ctx.fillRect(x,y,bw,330);
+    ctx.strokeStyle=sel?'#f2c14e':'rgba(255,255,255,.3)';
+    ctx.lineWidth=sel?4:2;ctx.strokeRect(x,y,bw,330);
+    const locked=!SAVE.unlocked[k];
+    const bounce=sel&&!locked?Math.sin(G.t*6)*4:0;
+    ctx.globalAlpha=locked?.45:1;
+    drawChar(k,x+bw/2-26,y+38+bounce,4,false,sel&&!locked?'run':'idle',G.t);
+    ctx.fillStyle=CHARS[k].color;ctx.font='bold 22px monospace';ctx.textAlign='center';
+    ctx.fillText(CHARS[k].name,x+bw/2,y+210);
+    ctx.globalAlpha=1;
+    if(locked){
+      ctx.fillStyle='#f2c14e';ctx.font='bold 26px monospace';
+      ctx.fillText('🔒',x+bw/2,y+120);
+      const prev=HERO_ORDER[HERO_ORDER.indexOf(k)-1];
+      ctx.fillStyle='#ddd';ctx.font='10px monospace';
+      ctx.fillText('Finish '+CHARS[prev].name+"'s path",x+bw/2,y+244);
+      ctx.fillText('to unlock',x+bw/2,y+258);
+    } else {
+      ctx.fillStyle='#ddd';ctx.font='11px monospace';
+      ctx.fillText(CHARS[k].tag1,x+bw/2,y+238);
+      ctx.fillStyle='#f2c14e';ctx.font='bold 11px monospace';
+      ctx.fillText(CHARS[k].tag2,x+bw/2,y+260);
+      /* medals: ch1, ch2, finale */
+      const mks=[k+'1',k+'2',medalKey('finale',k)];
+      const mcol=['#3a3a4a','#b9722d','#cfd6e4','#f2c14e'];
+      mks.forEach((mk,mi)=>{
+        const m=SAVE.medals[mk]||0;
+        ctx.beginPath();ctx.arc(x+bw/2-26+mi*26,y+280,8,0,7);
+        ctx.fillStyle=mcol[m];ctx.fill();
+        ctx.strokeStyle='rgba(255,255,255,.4)';ctx.lineWidth=1.5;ctx.stroke();
+      });
+      if(sel){ctx.fillStyle='#8fd07a';ctx.font='10px monospace';
+        const hint=CHARS[k].hint.split('   ');
+        hint.forEach((h3,j)=>ctx.fillText(h3,x+bw/2,y+302+j*13));}
+    }
+    if(pointer.tapped&&pointer.x>x&&pointer.x<x+bw&&pointer.y>y&&pointer.y<y+330){
+      if(locked){SFX.hit();toast&&0;}
+      else if(G.selIndex===i){startScript(k);SFX.win();}
+      else{G.selIndex=i;SFX.collect();}
+    }
+  });
+  textBlock(['◀ ▶ choose  ·  A confirm'],486,16,'#fff');
+  ctx.font='10px monospace';ctx.fillStyle='rgba(255,255,255,.55)';ctx.textAlign='center';
+  ctx.fillText('medals: ● bronze — finish   ● silver — all diyas   ● gold — all diyas, no damage',W/2,508);
+  if(pressed('ArrowLeft')){G.selIndex=(G.selIndex+3)%4;SFX.collect();}
+  if(pressed('ArrowRight')){G.selIndex=(G.selIndex+1)%4;SFX.collect();}
+  if(pressed('KeyA')||pressed('Enter')){startScript(list[G.selIndex]);SFX.win();}
+}
+function drawStory(){
+  const s=G.script[G.step];
+  const theme=G.playChar==='sita'?'vatika':G.playChar==='hanuman'?'ocean'
+             :G.playChar==='raavan'?'lankagold':'panchavati';
+  drawBG(theme,G.t*14,G.t);
+  ctx.fillStyle='rgba(0,0,0,.55)';ctx.fillRect(0,0,W,H);
+  drawChar(G.playChar,86,H-260,7,false,'idle',G.t);
+  ctx.fillStyle='rgba(0,0,0,.5)';ctx.fillRect(230,130,W-300,250);
+  ctx.strokeStyle='#f2c14e';ctx.lineWidth=3;ctx.strokeRect(230,130,W-300,250);
+  const shown=s.story.slice(0,G.storyLine+1);
+  ctx.textAlign='left';ctx.fillStyle='#fff';ctx.font='16px monospace';
+  shown.forEach((l,i)=>{
+    const words=l.split(' ');let line='',yy=176+i*56,xx=258;const maxw=W-360;
+    for(const w2 of words){
+      if(ctx.measureText(line+w2).width>maxw){ctx.fillText(line,xx,yy);yy+=22;line='';}
+      line+=w2+' ';
+    }
+    ctx.fillText(line,xx,yy);
+  });
+  ctx.fillStyle='#8fd07a';ctx.font='bold 12px monospace';ctx.textAlign='center';
+  ctx.fillText(CHARS[G.playChar].hint.replace(/   /g,'  ·  '),W/2,404);
+  textBlock([G.storyLine<s.story.length-1?'A · next':'A · continue'],432,14,'#f2c14e');
+  if(anyAction()){
+    SFX.collect();
+    if(G.storyLine<s.story.length-1)G.storyLine++;
+    else nextStep();
+  }
+}
+function drawGameover(){
+  ctx.fillStyle='rgba(10,5,20,.92)';ctx.fillRect(0,0,W,H);
+  textBlock(['THE PATH FADES...'],210,40,'#e05555');
+  textBlock(['But dharma always offers another chance.'],260,16,'#fff');
+  textBlock(['A · retry chapter        S · main menu'],345,16,'#f2c14e');
+  if(pressed('KeyA')||pressed('Enter')||pointer.tapped){
+    if(G.daily){startDaily();return;}
+    if(G.entry){G.score=G.entry.score;G.diyas=G.entry.diyas;G.runHearts=G.entry.hearts;}
+    G.combo=0;
+    loadLevel(level.id);G.mode='play';
+    Music.play(heroTrack(G.playChar,level.def),true);
+  }
+  if(pressed('KeyS')){G.daily=null;G.gravMul=1;G.mode='title';Music.play('night');}
+}
+function drawEnding(){
+  drawBG('panchavati',G.t*8,G.t);
+  updateAmbient('panchavati',1/60,G.t*8);
+  ctx.fillStyle='rgba(0,0,0,.45)';ctx.fillRect(0,0,W,H);
+  textBlock(['RAAVAN HAS FALLEN'],118,34,'#f2c14e');
+  textBlock(['Sita is free. Lanka is quiet. The diyas are lit for the journey home —',
+             'the very first Diwali.','',
+             'You began as '+CHARS[G.startChar].name+'.',
+             'But every path, every player, every telling of this tale',
+             'arrives at the same place:'],176,15,'#fff',27);
+  textBlock(['THE STORY ENDS WITH RAM.'],372,26,'#f2c14e');
+  drawChar('ram',W/2-26,398,4,false,'idle',G.t);
+  textBlock(['Score '+G.score+'   ·   Best '+(SAVE.best[G.startChar]||G.score)+'   ·   Diyas '+G.diyas],478,14,'#fff');
+  if(G.unlockToast){
+    ctx.fillStyle='#f2c14e';ctx.font='bold 17px monospace';ctx.textAlign='center';
+    if(Math.sin(G.t*5)>-.5)ctx.fillText('★ NEW PATH UNLOCKED: '+CHARS[G.unlockToast].name.toUpperCase()+' ★',W/2,504);
+  }
+  textBlock(['A · continue'],528,13,'#f2c14e');
+  if(anyAction()){G.mode='select';Music.play('night');SFX.collect();}
+}
+
+/* ---------------- Main loop ---------------- */
+let last=performance.now();
+function toggleFS(){
+  if(!document.fullscreenElement){document.documentElement.requestFullscreen&&document.documentElement.requestFullscreen();}
+  else document.exitFullscreen();
+}
+function togglePause(){
+  if(G.mode==='play'){G.mode='pause';Music.pause();}
+  else if(G.mode==='pause'){G.mode='play';Music.resume();}
+}
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden){ if(G.mode==='play'){G.mode='pause';} Music.pause(); }
+});
+function drawPause(){
+  drawPlay();
+  ctx.fillStyle='rgba(8,4,18,.78)';ctx.fillRect(0,0,W,H);
+  textBlock(['PAUSED'],210,44,'#f2c14e');
+  textBlock(['A / P · resume        S · quit to menu'],290,16,'#fff');
+  textBlock(['M mute · F fullscreen'],330,12,'rgba(255,255,255,.65)');
+  if(pressed('KeyA')||pressed('Enter')||pointer.tapped){G.mode='play';Music.resume();}
+  if(pressed('KeyS')){G.daily=null;G.gravMul=1;G.mode='title';level&&Music.stop();Music.play('night');}
+}
+function frame(now){
+  const dt=Math.min((now-last)/1000,.033);last=now;
+  if(G.mode!=='pause')G.t+=dt;
+  if(pressed('KeyM'))setMuted(!muted);
+  if(pressed('KeyF'))toggleFS();
+  if((pressed('Escape')||pressed('KeyP'))&&(G.mode==='play'||G.mode==='pause'))togglePause();
+  if(G.mode==='play')updatePlay(dt);
+  ctx.clearRect(0,0,W,H);
+  if(G.mode==='title')drawTitle();
+  else if(G.mode==='select')drawSelect();
+  else if(G.mode==='story')drawStory();
+  else if(G.mode==='play')drawPlay();
+  else if(G.mode==='gameover')drawGameover();
+  else if(G.mode==='ending')drawEnding();
+  else if(G.mode==='pause')drawPause();
+  else if(G.mode==='name')drawName();
+  else if(G.mode==='codein')drawCodeIn();
+  else if(G.mode==='codeshow')drawCodeShow();
+  else if(G.mode==='board')drawBoard();
+  else if(G.mode==='dailyend')drawDailyEnd();
+  else if(G.mode==='quiz')drawQuiz();
+  else if(G.mode==='gurukul')drawGurukul();
+  for(const k in edge)edge[k]=false;
+  pointer.tapped=false;
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+/* debug hook */
+window.__DBG={get G(){return G},get P(){return P},get level(){return level},
+  loadLevel,startScript,nextStep,Music,
+  probe(){ const out=[]; for(const s of activeSolids())
+    if(hit(P,s)) out.push({x:s.x,y:s.y,w:s.w,h:s.h});
+    return {overlaps:out, nSolids:activeSolids().length, vine:!!P.vine,
+            winT:P.winT, dead:P.dead, mode:G.mode}; }};
+</script>
+</body>
+</html>

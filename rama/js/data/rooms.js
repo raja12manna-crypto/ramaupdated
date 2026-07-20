@@ -1,0 +1,57 @@
+/* ============================================================
+   RAMA — The Retro Game · data/rooms.js — world graph
+   Classic script; shares global scope. Load order matters.
+============================================================ */
+/* ---------------- Rooms (semi-open world graph) ---------------- */
+const ROOMS={
+  palace_court:{ w:960, theme:'palace', label:'PALACE COURTYARD',
+    decor:[ ['palace',60,120],['pillar',330],['pillar',420],['banner',360],['banner',480],
+            ['lamp',260],['lamp',560],['gate',820] ],
+    npcs:[ {id:'guard',x:770,c:'#c05a3a'},{id:'sita_hint',x:300,c:'#9a7ab0'} ],
+    exits:{ right:{room:'market_street',x:40} }, spawn:150 },
+  market_street:{ w:1200, theme:'market', label:'MARKET STREET',
+    decor:[ ['house',80,'#8a4a3a'],['awn',100,'#e05555'],['house',260,'#6a5a8a'],['awn',280,'#f2c14e'],
+            ['house',450,'#5a7a5a'],['awn',470,'#7ac8e8'],['house',640,'#8a6a3a'],['awn',660,'#e07ab0'],
+            ['stall',900],['lamp',180],['lamp',760],['banner',560] ],
+    npcs:[ {id:'flower',x:310,c:'#e07ab0'},{id:'potter',x:930,c:'#b08a5a'},
+           {id:'child1',x:520,c:'#f2c14e',kid:true},{id:'musician',x:700,c:'#7a5ab0',music:true} ],
+    exits:{ left:{room:'palace_court',x:900}, right:{room:'temple_square',x:40} }, spawn:120 },
+  temple_square:{ w:900, theme:'temple', label:'TEMPLE SQUARE',
+    decor:[ ['temple',300],['lamp',200],['lamp',640],['banner',260],['banner',600],['bellpost',560] ],
+    npcs:[ {id:'priest',x:420,c:'#f2e0c0'} ],
+    exits:{ left:{room:'market_street',x:1140}, right:{room:'riverside',x:40} }, spawn:120 },
+  riverside:{ w:900, theme:'river', label:'BANKS OF THE SARAYU',
+    decor:[ ['tree',150],['tree',420],['tree',620],['ghatsteps',700],['lamp',300] ],
+    npcs:[ {id:'washer',x:520,c:'#7ab0c8'} ],
+    birds:3,
+    exits:{ left:{room:'temple_square',x:840}, right:{room:'training_grounds',x:40} }, spawn:120 },
+  training_grounds:{ w:800, theme:'train', label:'TRAINING GROUNDS',
+    decor:[ ['tree',680],['targetpost',430],['targetpost',530],['banner',200],['lamp',120] ],
+    npcs:[ {id:'guru',x:260,c:'#f2e0c0',guru:true} ],
+    exits:{ left:{room:'riverside',x:840} }, spawn:110 },
+  /* ---------- CHAPTER 2 · THE FOREST ---------- */
+  forest_path:{ w:1100, theme:'forest', label:'THE FOREST ROAD',
+    decor:[ ['tree',120],['tree',260],['tree',380],['bigtree',520],['tree',700],
+            ['tree',820],['bigtree',960],['rock',320],['rock',760],['shrine',600] ],
+    npcs:[ {id:'hermit',x:610,c:'#c8a060',old:true} ],
+    birds:2,
+    exits:{ right:{room:'ganga_bank',x:60} }, spawn:80, lockLeft:'The road back closes behind an exile\'s vow.' },
+  ganga_bank:{ w:900, theme:'ganga', label:'BANKS OF THE GANGA',
+    decor:[ ['tree',110],['tree',240],['ghatsteps',380],['boat',560],['rock',300] ],
+    npcs:[ {id:'guha',x:470,c:'#7a4a2a'} ],
+    birds:2,
+    exits:{ left:{room:'forest_path',x:1040} }, spawn:90, water:520 },
+  panchavati:{ w:760, theme:'forest', label:'PANCHAVATI',
+    decor:[ ['bigtree',120],['bigtree',640],['hut',330],['shrine',540],['rock',230] ],
+    npcs:[],
+    birds:3,
+    exits:{ right:{room:'deer_woods',x:70} }, spawn:90,
+    lockLeft:'The Ganga lies behind. The story flows forward.' },
+  deer_woods:{ w:1600, theme:'forest', label:'THE DEEP WOODS',
+    decor:[ ['tree',150],['bigtree',330],['tree',520],['rock',430],['bigtree',760],
+            ['tree',940],['tree',1080],['bigtree',1260],['rock',1180],['tree',1440] ],
+    npcs:[],
+    birds:2,
+    exits:{ left:{room:'panchavati',x:690} }, spawn:80 }
+};
+
