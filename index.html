@@ -2,67 +2,16 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
-<meta name="theme-color" content="#0b0714">
-<title>RAMA — The Retro Game</title>
-<link rel="stylesheet" href="css/style.css">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>RAMA V1 — Vertical Slice</title>
+<style>
+  *{margin:0;padding:0} html,body{height:100%;background:#000;overflow:hidden}
+  body{display:flex;align-items:center;justify-content:center}
+  canvas{image-rendering:pixelated;image-rendering:crisp-edges;background:#0b0714}
+</style>
 </head>
 <body>
-
-<div id="rotate">⟳<br>Rotate your device<br><span style="font-size:11px;color:#8f86a8">RAMA is best experienced in landscape</span></div>
-
-<div id="gate">
-  <div class="frame"><h1>RAMA</h1></div>
-  <div class="sub">THE RETRO GAME</div>
-  <div class="note">Live the Ramayana. Walk the streets of Ayodhya,<br>learn the bow, and take the road of exile.</div>
-  <button id="gbtn"><img alt="" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0OCA0OCI+PHBhdGggZmlsbD0iI0VBNDMzNSIgZD0iTTI0IDkuNWMzLjU0IDAgNi43MSAxLjIyIDkuMjEgMy42bDYuODUtNi44NUMzNS45IDIuMzggMzAuNDcgMCAyNCAwIDE0LjYyIDAgNi41MSA1LjM4IDIuNTYgMTMuMjJsNy45OCA2LjE5QzEyLjQzIDEzLjcyIDE3Ljc0IDkuNSAyNCA5LjV6Ii8+PHBhdGggZmlsbD0iIzQyODVGNCIgZD0iTTQ2Ljk4IDI0LjU1YzAtMS41Ny0uMTUtMy4wOS0uMzgtNC41NUgyNHY5LjAyaDEyLjk0Yy0uNTggMi45Ni0yLjI2IDUuNDgtNC43OCA3LjE4bDcuNzMgNmM0LjUxLTQuMTggNy4wOS0xMC4zNiA3LjA5LTE3LjY1eiIvPjxwYXRoIGZpbGw9IiNGQkJDMDUiIGQ9Ik0xMC41MyAyOC41OWMtLjQ4LTEuNDUtLjc2LTIuOTktLjc2LTQuNTlzLjI3LTMuMTQuNzYtNC41OWwtNy45OC02LjE5QzEuMjIgMTYuNDYgMCAyMC4xMiAwIDI0YzAgMy44OCAxLjIyIDcuNTQgMy41NiAxMC43OGw3Ljk3LTYuMTl6Ii8+PHBhdGggZmlsbD0iIzM0QTg1MyIgZD0iTTI0IDQ4YzYuNDggMCAxMS45My0yLjEzIDE1Ljg5LTUuODFsLTcuNzMtNmMtMi4xNSAxLjQ1LTQuOTIgMi4zLTguMTYgMi4zLTYuMjYgMC0xMS41Ny00LjIyLTEzLjQ3LTkuOTFsLTcuOTggNi4xOUM2LjUxIDQyLjYyIDE0LjYyIDQ4IDI0IDQ4eiIvPjwvc3ZnPg==">
-    Sign in with Google</button>
-  <div class="who" id="who"></div>
-  <div class="err" id="gerr"></div>
-  <button id="devEnter">▸ ENTER WITHOUT LOGIN (offline dev mode)</button>
-  <div class="note" id="cfgNote" style="display:none">Firebase is not configured yet — paste your <b style="color:var(--gold)">firebaseConfig</b> to Claude and this button becomes a real Google login.</div>
-</div>
-
-<div id="wrap"><canvas id="cv" width="640" height="360"></canvas></div>
-
-<div class="tc" id="tcL">
-  <div class="tb" data-k="ArrowLeft">◀</div>
-  <div class="tb" data-k="ArrowRight">▶</div>
-</div>
-<div class="tc" id="tcR">
-  <div class="tb" data-k="KeyS">✦</div>
-  <div class="tb" data-k="KeyA">A</div>
-  <div class="tb" data-k="ArrowUp">▲</div>
-</div>
-
-<!-- Firebase (compat CDN) -->
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-
-<!-- Game modules · classic scripts · ORDER MATTERS (see README) -->
-<script src="js/firebase.js"></script>
-<script src="js/config.js"></script>
-<script src="js/save.js"></script>
-<script src="js/audio.js"></script>
-<script src="js/assets.js"></script>
-<script src="js/renderer.js"></script>
-<script src="js/input.js"></script>
-<script src="js/data/themes.js"></script>
-<script src="js/data/entries.js"></script>
-<script src="js/data/dialogs.js"></script>
-<script src="js/data/rooms.js"></script>
-<script src="js/state.js"></script>
-<script src="js/world.js"></script>
-<script src="js/player.js"></script>
-<script src="js/npcs.js"></script>
-<script src="js/dialogue.js"></script>
-<script src="js/training.js"></script>
-<script src="js/book.js"></script>
-<script src="js/ui.js"></script>
-<script src="js/story.js"></script>
-<script src="js/story2.js"></script>
-<script src="js/engine.js"></script>
-<script src="js/main.js"></script>
+<canvas id="game"></canvas>
+<script type="module" src="src/main.js"></script>
 </body>
 </html>
