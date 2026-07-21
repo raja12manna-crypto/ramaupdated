@@ -1,0 +1,6 @@
+{
+  "images": {},
+  "json": {},
+  "audio": {},
+  "_comment": "Empty until real art exists. Populate per docs/ASSET_SPECS.md; assets.js loads whatever keys are present and skips the rest."
+}
