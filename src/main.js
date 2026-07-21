@@ -1,69 +1,102 @@
 /* ============================================================
-   RAMA V1 · main.js — PLAYABLE MOVEMENT DEMO
-   Reprioritized milestone: Input + Physics + Camera + Player
-   Controller pulled ahead of the module order so there is
-   something to actually PLAY. Combat/enemies/Astra Wheel and
-   the formal Scene Manager wiring return in later modules —
-   this file will be replaced by a proper scene-driven boot
-   once Module 3's SceneManager takes over the game's flow.
-
-   Controls: <- -> move . Z / Space jump (+ wall-jump while
-   clinging to a wall) . X roll/dash (also passes under low
-   obstacles) . P pause . F3 debug HUD
-
-   The previous Visual Target art demo is preserved at
-   src/demos/visual-target-demo.js for reference.
+   RAMA V1 · main.js — BOOT & SCENE FLOW
+   Required Google login -> Title -> Lore -> Main Menu
+   (New Game / Continue / Settings) -> Forest of Tatākā.
+   Scene transitions are owned by core/scenes.js (Module 3),
+   finally wired in for real instead of the direct hand-rolled
+   loop used during the earlier playable-movement milestone.
 ============================================================ */
 import { Engine }   from './core/engine.js';
 import { CONFIG }   from './core/config.js';
 import { InputSystem } from './core/input.js';
-import { Camera }   from './core/camera.js';
-import { buildRamaFrames, drawRama } from './art/rama.js';
-import { buildForest, drawForest } from './art/forest.js';
-import { LEVEL, GROUND_Y } from './game/forestLevel.js';
-import { drawLevel } from './game/levelRender.js';
-import { createPlayer, updatePlayer } from './game/player.js';
+import { AssetLoader } from './core/assets.js';
+import { SceneManager } from './core/scenes.js';
+import { Cloud } from './core/firebase.js';
+import { SAVE, localLoad, persist, cloudMerge, DEFAULT_SAVE } from './core/save.js';
+import { createTitleScene } from './scenes/title.js';
+import { createLoreScene } from './scenes/lore.js';
+import { createMenuScene } from './scenes/menu.js';
+import { createSettingsScene } from './scenes/settings.js';
+import { createGameScene } from './scenes/game.js';
 
 const cv = document.getElementById('game');
 cv.width = CONFIG.WIDTH; cv.height = CONFIG.HEIGHT;
 const engine = new Engine(cv);
 const input  = new InputSystem();
-const camera = new Camera();
+input.bindTouchButtons(document.getElementById('tcL'));
+input.bindTouchButtons(document.getElementById('tcR'));
+if(matchMedia('(pointer:coarse)').matches) document.body.classList.add('touch');
 
-const frames = buildRamaFrames();
-const forest = buildForest();
-const player = createPlayer();
+const assets = new AssetLoader();
+const sm = new SceneManager(engine, assets);
 
-engine.setUpdate((dt) => {
-  updatePlayer(player, dt, input);
-  camera.follow(player.x, dt, LEVEL.width);
+/* ---------------- Scene graph ---------------- */
+const gameScene = createGameScene({
+  SAVE, persist, input,
+  onPause: () => sm.goto('menu'),
 });
-
-engine.setRender((ctx, alpha) => {
-  const camX = camera.interpolated(alpha);
-  drawForest(ctx, forest, camX, engine.clock.t, { skipGround: true });
-  drawLevel(ctx, LEVEL, camX);
-
-  const px = player.x - camX, py = player.y;
-  ctx.fillStyle = 'rgba(0,0,0,.3)';
-  ctx.beginPath(); ctx.ellipse(px, py + 2, 10, 3, 0, 0, 7); ctx.fill();
-  drawRama(ctx, frames, player.pose, player.fi, px, py, player.facing,
-    player.rolling ? 1 - Math.max(0, player.rollT) / 0.3 : 0);
-
-  ctx.fillStyle = 'rgba(232,224,208,.85)'; ctx.font = '10px monospace'; ctx.textAlign = 'center';
-  ctx.fillText('RAMA V1 - FOREST OF TATAKA - PLAYABLE DEMO', CONFIG.WIDTH / 2, 16);
-  ctx.font = '9px monospace';
-  ctx.fillText('<- -> move . Z/Space jump (+wall-jump) . X roll/dash . P pause . F3 debug', CONFIG.WIDTH / 2, 350);
-
-  if(engine.paused){
-    ctx.fillStyle = 'rgba(8,5,14,.7)'; ctx.fillRect(0, 0, CONFIG.WIDTH, CONFIG.HEIGHT);
-    ctx.fillStyle = '#f2c14e'; ctx.font = 'bold 18px monospace';
-    ctx.fillText('PAUSED', CONFIG.WIDTH / 2, 180);
-  }
-});
+sm.register('title', () => createTitleScene({ input, onDone: () => sm.goto('lore') }));
+sm.register('lore',  () => createLoreScene({ input, onDone: () => sm.goto('menu') }));
+sm.register('menu',  () => createMenuScene({
+  SAVE, input,
+  onNewGame: () => { Object.assign(SAVE, DEFAULT_SAVE()); persist(); sm.goto('game', 'new'); },
+  onContinue: () => sm.goto('game', 'continue'),
+  onSettings: () => sm.goto('settings'),
+}));
+sm.register('settings', () => createSettingsScene({ input, onBack: () => sm.goto('menu') }));
+sm.register('game', () => gameScene);
+/* SceneManager (Module 3) already owns engine.setUpdate/setRender — each
+   scene closes over `input` itself, so no extra wiring is needed here. */
 
 addEventListener('keydown', e => {
-  if(e.code === 'KeyP') engine.paused ? engine.resume() : engine.pause('user');
+  if(e.code === 'KeyP' && sm.currentKey === 'game') engine.paused ? engine.resume() : engine.pause('user');
 });
-engine.start();
-window.__V1 = { engine, input, camera, player, LEVEL, CONFIG };
+
+/* ---------------- Boot: required Google login ---------------- */
+const gate = document.getElementById('gate'), gbtn = document.getElementById('gbtn'),
+      gerr = document.getElementById('gerr'), cfgNote = document.getElementById('cfgNote'),
+      who = document.getElementById('who'), devEnter = document.getElementById('devEnter');
+
+function enterGame(){
+  gate.style.display = 'none';
+  engine.start();
+  sm.goto('title');
+}
+
+Cloud.init();
+localLoad();
+
+if(Cloud.offline){
+  /* No Firebase configured yet — dev fallback so the game remains testable.
+     Real deployments with a config paste in core/firebase.js get the full
+     required-login gate below instead. */
+  cfgNote.style.display = 'block';
+  devEnter.style.display = 'block';
+  gbtn.addEventListener('click', () => {
+    gerr.style.display = 'block';
+    gerr.textContent = 'Firebase not configured — use offline dev mode below, or paste your firebaseConfig.';
+  });
+  devEnter.addEventListener('click', enterGame);
+} else {
+  devEnter.style.display = 'none';
+  Cloud.onAuth(u => {
+    if(u){
+      who.style.display = 'block';
+      who.textContent = '🙏 ' + (u.displayName || 'Pilgrim');
+      cloudMerge(u.uid).then(enterGame);
+    }
+  });
+  gbtn.addEventListener('click', () => {
+    Cloud.signIn().catch(e => {
+      gerr.style.display = 'block';
+      gerr.textContent = 'Sign-in failed: ' + (e && e.message || e);
+    });
+  });
+}
+
+addEventListener('beforeunload', () => { persist(); Cloud.flush(); });
+document.addEventListener('visibilitychange', () => {
+  if(document.hidden){ persist(); Cloud.flush(); }
+});
+
+window.__V1 = { engine, input, sm, SAVE, Cloud, CONFIG, gameScene, enterGame };
