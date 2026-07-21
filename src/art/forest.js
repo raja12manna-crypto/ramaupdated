@@ -86,7 +86,7 @@ function tile(ctx, img, offX, y){
   for(; x<W; x+=w) ctx.drawImage(img, Math.round(x), y);
 }
 
-export function drawForest(ctx, L, camX, t){
+export function drawForest(ctx, L, camX, t, opts={}){
   tile(ctx, L.far,    camX*0.12, 0);
   /* god rays — additive, gently swaying (reference lighting) */
   ctx.save(); ctx.globalCompositeOperation='lighter';
@@ -110,7 +110,7 @@ export function drawForest(ctx, L, camX, t){
   }
   ctx.restore();
   tile(ctx, L.mid,    camX*0.35, 0);
-  tile(ctx, L.ground, camX*1.0,  GROUND-40);
+  if(!opts.skipGround) tile(ctx, L.ground, camX*1.0, GROUND-40);
   /* fireflies between ground and foreground */
   for(const f of L.flies){
     const fx=((f.x - camX*0.9)%(W+40)+(W+40))%(W+40)-20;

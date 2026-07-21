@@ -1,65 +1,69 @@
 /* ============================================================
-   RAMA V1 · main.js — VISUAL TARGET DEMO (Module 1.5)
-   Sequence on the game clock: idle 3s → bow-draw 1.8s (flare)
-   → run with parallax scroll.  Proves: art direction, frame
-   pre-rendering, parallax pipeline, interpolated camera.
-   Replaced by Scene Manager boot in Module 3.
+   RAMA V1 · main.js — PLAYABLE MOVEMENT DEMO
+   Reprioritized milestone: Input + Physics + Camera + Player
+   Controller pulled ahead of the module order so there is
+   something to actually PLAY. Combat/enemies/Astra Wheel and
+   the formal Scene Manager wiring return in later modules —
+   this file will be replaced by a proper scene-driven boot
+   once Module 3's SceneManager takes over the game's flow.
+
+   Controls: <- -> move . Z / Space jump (+ wall-jump while
+   clinging to a wall) . X roll/dash (also passes under low
+   obstacles) . P pause . F3 debug HUD
+
+   The previous Visual Target art demo is preserved at
+   src/demos/visual-target-demo.js for reference.
 ============================================================ */
 import { Engine }   from './core/engine.js';
 import { CONFIG }   from './core/config.js';
+import { InputSystem } from './core/input.js';
+import { Camera }   from './core/camera.js';
 import { buildRamaFrames, drawRama } from './art/rama.js';
-import { buildForest, drawForest, GROUND } from './art/forest.js';
+import { buildForest, drawForest } from './art/forest.js';
+import { LEVEL, GROUND_Y } from './game/forestLevel.js';
+import { drawLevel } from './game/levelRender.js';
+import { createPlayer, updatePlayer } from './game/player.js';
 
 const cv = document.getElementById('game');
 cv.width = CONFIG.WIDTH; cv.height = CONFIG.HEIGHT;
 const engine = new Engine(cv);
+const input  = new InputSystem();
+const camera = new Camera();
 
 const frames = buildRamaFrames();
 const forest = buildForest();
-
-const S = { phase:'idle', animT:0, camX:0, pCamX:0, flare:0 };
-engine.clock.after(3.0, () => { S.phase='bow'; S.animT=0; });
-engine.clock.after(4.8, () => { S.phase='run'; S.animT=0; });
+const player = createPlayer();
 
 engine.setUpdate((dt) => {
-  S.animT += dt;
-  S.pCamX = S.camX;
-  if(S.phase==='run') S.camX += 118*dt;
-  if(S.phase==='bow') S.flare = Math.min(1, S.flare + dt*1.2);
-  else S.flare = Math.max(0, S.flare - dt*2);
+  updatePlayer(player, dt, input);
+  camera.follow(player.x, dt, LEVEL.width);
 });
 
 engine.setRender((ctx, alpha) => {
-  const cam = S.pCamX + (S.camX - S.pCamX) * alpha;   // interpolated camera
-  drawForest(ctx, forest, cam, engine.clock.t);
-  const rx = CONFIG.WIDTH * 0.5, ry = GROUND;
-  let pose='idle', fi=0;
-  if(S.phase==='idle'){ pose='idle'; fi = Math.floor(S.animT*2)%2; }
-  if(S.phase==='bow'){  pose='bow';  fi = Math.min(2, Math.floor(S.animT/0.5)); }
-  if(S.phase==='run'){  pose='run';  fi = Math.floor(S.animT*10)%6; }
-  /* soft ground shadow */
-  ctx.fillStyle='rgba(0,0,0,.35)';
-  ctx.beginPath(); ctx.ellipse(rx, ry+3, 18, 4, 0, 0, 7); ctx.fill();
-  drawRama(ctx, frames, pose, fi, rx, ry, 1);
-  /* divine flare during full draw */
-  if(S.flare>0){
-    ctx.save(); ctx.globalCompositeOperation='lighter';
-    ctx.fillStyle='rgba(248,200,104,'+(0.28*S.flare)+')';
-    ctx.beginPath(); ctx.arc(rx+16, ry-40, 26*S.flare, 0, 7); ctx.fill();
-    ctx.restore();
-  }
-  ctx.fillStyle='rgba(232,224,208,.85)'; ctx.font='10px monospace'; ctx.textAlign='center';
-  ctx.fillText('RAMA V1 · VISUAL TARGET — FOREST OF TATĀKĀ', CONFIG.WIDTH/2, 20);
-  ctx.fillText('P pause · F3 debug', CONFIG.WIDTH/2, 348);
+  const camX = camera.interpolated(alpha);
+  drawForest(ctx, forest, camX, engine.clock.t, { skipGround: true });
+  drawLevel(ctx, LEVEL, camX);
+
+  const px = player.x - camX, py = player.y;
+  ctx.fillStyle = 'rgba(0,0,0,.3)';
+  ctx.beginPath(); ctx.ellipse(px, py + 2, 10, 3, 0, 0, 7); ctx.fill();
+  drawRama(ctx, frames, player.pose, player.fi, px, py, player.facing,
+    player.rolling ? 1 - Math.max(0, player.rollT) / 0.3 : 0);
+
+  ctx.fillStyle = 'rgba(232,224,208,.85)'; ctx.font = '10px monospace'; ctx.textAlign = 'center';
+  ctx.fillText('RAMA V1 - FOREST OF TATAKA - PLAYABLE DEMO', CONFIG.WIDTH / 2, 16);
+  ctx.font = '9px monospace';
+  ctx.fillText('<- -> move . Z/Space jump (+wall-jump) . X roll/dash . P pause . F3 debug', CONFIG.WIDTH / 2, 350);
+
   if(engine.paused){
-    ctx.fillStyle='rgba(8,5,14,.7)'; ctx.fillRect(0,0,CONFIG.WIDTH,CONFIG.HEIGHT);
-    ctx.fillStyle='#f2c14e'; ctx.font='bold 18px monospace';
-    ctx.fillText('PAUSED', CONFIG.WIDTH/2, 180);
+    ctx.fillStyle = 'rgba(8,5,14,.7)'; ctx.fillRect(0, 0, CONFIG.WIDTH, CONFIG.HEIGHT);
+    ctx.fillStyle = '#f2c14e'; ctx.font = 'bold 18px monospace';
+    ctx.fillText('PAUSED', CONFIG.WIDTH / 2, 180);
   }
 });
 
 addEventListener('keydown', e => {
-  if(e.code==='KeyP') engine.paused ? engine.resume() : engine.pause('user');
+  if(e.code === 'KeyP') engine.paused ? engine.resume() : engine.pause('user');
 });
 engine.start();
-window.__V1 = { engine, S, CONFIG };
+window.__V1 = { engine, input, camera, player, LEVEL, CONFIG };
