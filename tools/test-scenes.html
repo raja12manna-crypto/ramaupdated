@@ -1,0 +1,11 @@
+<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>
+<canvas id="cv" width="640" height="360"></canvas>
+<script type="module">
+  import { Engine } from '../src/core/engine.js';
+  import { CONFIG } from '../src/core/config.js';
+  import { AssetLoader } from '../src/core/assets.js';
+  import { SceneManager } from '../src/core/scenes.js';
+  import { bus } from '../src/core/events.js';
+  window.__test = { Engine, CONFIG, AssetLoader, SceneManager, bus };
+</script>
+</body></html>
